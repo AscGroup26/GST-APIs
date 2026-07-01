@@ -1,0 +1,11 @@
+[server]
+maxUploadSize = 500
+headless = false
+fileWatcherType = "none"
+maxMessageSize = 500
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+fastReruns = true

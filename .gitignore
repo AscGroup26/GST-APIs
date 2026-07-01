@@ -1,0 +1,21 @@
+# Data files — excluded from git
+*.csv
+*.xlsx
+*.xls
+*.xlsb
+*.xlsm
+
+# Python virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS files
+.DS_Store
+Thumbs.db
