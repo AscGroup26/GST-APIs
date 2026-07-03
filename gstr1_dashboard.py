@@ -25,15 +25,55 @@ DEFAULT_FOLDER = os.path.dirname(os.path.abspath(__file__))
 # ─────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner=False)
+def _get_page_icon():
+    try:
+        import urllib.request as _u
+        from PIL import Image as _pil
+        import io as _bio
+        with _u.urlopen("https://i.ibb.co/LXmWddkt/ASC-New-Logo-Blue.png", timeout=5) as _r:
+            return _pil.open(_bio.BytesIO(_r.read())).convert("RGBA")
+    except Exception:
+        return "📊"
+
 st.set_page_config(
-    page_title="Modicare GSTR-1 Dashboard",
-    page_icon="📊",
+    page_title="ASC GSTR-1 Dashboard",
+    page_icon=_get_page_icon(),
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+# ─────────────────────────────────────────────────────────────────
+# SAAS AUTH GATE — must run before any visible UI
+# ─────────────────────────────────────────────────────────────────
+from saas_auth import (
+    saas_auth_gate, saas_sidebar_nav, show_admin_panel,
+    show_profile_page, show_announcements_banner, log_download, get_current_user,
+)
+saas_auth_gate()   # shows login page + st.stop() if not authenticated
+
 st.markdown("""
 <style>
+    /* Hide Streamlit chrome */
+    header[data-testid="stHeader"],
+    div[data-testid="stToolbar"],
+    div[data-testid="stDecoration"],
+    div[data-testid="stStatusWidget"],
+    #MainMenu, footer { display: none !important; }
+
+    /* Zero the CSS variable that drives padding-top on the app container */
+    :root { --header-height: 0px !important; }
+
+    /* Remove top padding/margin from every container level */
+    .stApp { margin-top: 0 !important; padding-top: 0 !important; }
+    section[data-testid="stAppViewContainer"],
+    section[data-testid="stAppViewContainer"] > div,
+    div[data-testid="stAppViewBlockContainer"],
+    div[data-testid="stMainBlockContainer"],
+    section.main,
+    section.main > div { padding-top: 0 !important; margin-top: 0 !important; }
+    div.block-container { padding-top: 0.75rem !important; }
+
     .main-header {
         background: linear-gradient(90deg, #1e3a5f 0%, #2d6a9f 100%);
         padding: 20px 30px; border-radius: 10px; margin-bottom: 20px;
@@ -42,12 +82,201 @@ st.markdown("""
     .main-header h1 { margin: 0; font-size: 26px; }
     .main-header p  { margin: 4px 0 0; font-size: 13px; opacity: 0.85; }
     div[data-testid="stMetric"] { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; }
-</style>
+
+    /* ── Sidebar: ASC Blue theme ───────────────────────────────── */
+    section[data-testid="stSidebar"],
+    section[data-testid="stSidebar"] > div:first-child {
+        background-color: #1f2f60 !important;
+    }
+
+    /* ALL text elements → white */
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] span,
+    section[data-testid="stSidebar"] div,
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3,
+    section[data-testid="stSidebar"] h4,
+    section[data-testid="stSidebar"] h5,
+    section[data-testid="stSidebar"] h6,
+    section[data-testid="stSidebar"] b,
+    section[data-testid="stSidebar"] strong,
+    section[data-testid="stSidebar"] li,
+    section[data-testid="stSidebar"] a,
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] small {
+        color: rgba(255,255,255,0.92) !important;
+    }
+
+    /* Slightly muted: captions, help text, secondary info */
+    section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p,
+    section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] span,
+    section[data-testid="stSidebar"] small,
+    section[data-testid="stSidebar"] .st-emotion-cache-fis6aj { color: rgba(255,255,255,0.55) !important; }
+
+    /* Divider */
+    section[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.15) !important; }
+
+    /* Inputs (return period, folder path) — white box, dark readable text */
+    section[data-testid="stSidebar"] input {
+        background: #ffffff !important;
+        color: #1f2f60 !important;
+        border-color: rgba(255,255,255,0.5) !important;
+        border-radius: 6px !important;
+        caret-color: #1f2f60 !important;
+    }
+    section[data-testid="stSidebar"] input::placeholder { color: #94adc8 !important; }
+
+    /* BaseWeb input border wrapper */
+    section[data-testid="stSidebar"] div[data-baseweb="input"] {
+        background: #ffffff !important;
+        border-color: rgba(255,255,255,0.4) !important;
+        border-radius: 6px !important;
+    }
+
+    /* ALL sidebar buttons — base style */
+    section[data-testid="stSidebar"] button {
+        border-radius: 7px !important;
+    }
+
+    /* Logout / secondary button — target by kind attribute on the button itself */
+    section[data-testid="stSidebar"] button[kind="secondary"],
+    section[data-testid="stSidebar"] button[kind="secondaryFormSubmit"] {
+        background-color: rgba(255,255,255,0.15) !important;
+        border: 1.5px solid rgba(255,255,255,0.45) !important;
+        color: #ffffff !important;
+    }
+    section[data-testid="stSidebar"] button[kind="secondary"] *,
+    section[data-testid="stSidebar"] button[kind="secondaryFormSubmit"] * {
+        color: #ffffff !important;
+    }
+    section[data-testid="stSidebar"] button[kind="secondary"]:hover,
+    section[data-testid="stSidebar"] button[kind="secondaryFormSubmit"]:hover {
+        background-color: rgba(255,255,255,0.28) !important;
+    }
+
+    /* Process & Generate / primary buttons — yellow */
+    section[data-testid="stSidebar"] button[kind="primary"],
+    section[data-testid="stSidebar"] button[kind="primaryFormSubmit"] {
+        background-color: #f9be3e !important;
+        color: #1f2f60 !important;
+        border: none !important;
+        font-weight: 700 !important;
+    }
+    section[data-testid="stSidebar"] button[kind="primary"] *,
+    section[data-testid="stSidebar"] button[kind="primaryFormSubmit"] * {
+        color: #1f2f60 !important;
+    }
+    section[data-testid="stSidebar"] button[kind="primary"]:hover,
+    section[data-testid="stSidebar"] button[kind="primaryFormSubmit"]:hover {
+        background-color: #e0a830 !important;
+    }
+
+    /* Radio button circles */
+    section[data-testid="stSidebar"] [data-testid="stRadio"] label { color: rgba(255,255,255,0.9) !important; }
+
+    /* Select/dropdown — general */
+    section[data-testid="stSidebar"] div[data-baseweb="select"] { background: rgba(255,255,255,0.10) !important; }
+    section[data-testid="stSidebar"] div[data-baseweb="select"] * { color: #ffffff !important; }
+
+    /* Return period month/year selectors — white box with dark text */
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child {
+        background-color: #ffffff !important;
+        border: 1.5px solid rgba(255,255,255,0.5) !important;
+        border-radius: 6px !important;
+    }
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child * {
+        color: #1f2f60 !important;
+    }
+    /* Dropdown menu (the options list) */
+    [data-baseweb="popover"] [data-baseweb="menu"] {
+        background: #ffffff !important;
+    }
+    [data-baseweb="popover"] [role="option"] {
+        color: #1f2f60 !important;
+        background: #ffffff !important;
+    }
+    [data-baseweb="popover"] [role="option"]:hover,
+    [data-baseweb="popover"] [aria-selected="true"] {
+        background: #e8ecf7 !important;
+        color: #1f2f60 !important;
+    }
+
+    /* Hide sidebar scrollbar (Chrome/Safari/Firefox/Edge) */
+    section[data-testid="stSidebar"] > div:first-child {
+        overflow-y: auto !important;
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+    }
+    section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar {
+        width: 0px !important;
+        display: none !important;
+    }
+
+    /* ── File uploader: reset so content is visible ────────────── */
+    /* The drop zone has a white/light background — reset text to dark */
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
+        background-color: rgba(255,255,255,0.95) !important;
+        border: 2px dashed rgba(31,47,96,0.35) !important;
+        border-radius: 8px !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] *,
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzoneInstructions"] * {
+        color: #1f2f60 !important;
+        fill: #1f2f60 !important;
+    }
+    /* "Browse files" button inside uploader */
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button,
+    section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
+        background-color: #1f2f60 !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 6px !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button *,
+    section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] * {
+        color: #ffffff !important;
+    }
+    /* Keep button blue on hover — prevent Streamlit default white override */
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button:hover,
+    section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover {
+        background-color: #2a3d72 !important;
+        color: #ffffff !important;
+        border: none !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button:hover *,
+    section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover * {
+        color: #ffffff !important;
+    }
+    /* Keep dropzone background white on hover/drag-over */
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"]:hover {
+        background-color: rgba(255,255,255,0.95) !important;
+        border-color: #1f2f60 !important;
+    }
+
+    /* ── Static sidebar — always visible, no collapse ─────────── */
+    /* Lock the sidebar open: override any transform Streamlit applies */
+    section[data-testid="stSidebar"] {
+        transform: none !important;
+        min-width: 280px !important;
+        width: 280px !important;
+    }
+    /* Hide both the « collapse and » expand toggle buttons */
+    [data-testid="stSidebarNavButton"],
+    [data-testid="stSidebarNavCollapseButton"],
+    [data-testid="collapsedControl"],
+    [data-testid="stSidebarNavButton"] *,
+    [data-testid="stSidebarNavCollapseButton"] * {
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="main-header">
-    <h1>📊 Modicare GSTR-1 Dashboard</h1>
+    <h1>GSTR-1 Dashboard</h1>
     <p>ASC Consulting Pvt. Ltd. &nbsp;|&nbsp; Upload monthly source files → Generate GSTR-1 return data</p>
 </div>
 """, unsafe_allow_html=True)
@@ -275,11 +504,42 @@ GSTIN_STATE_MAP = {
 }
 
 # ─────────────────────────────────────────────────────────────────
+# PAGE ROUTING — admin / profile / dashboard
+# ─────────────────────────────────────────────────────────────────
+_saas_page = saas_sidebar_nav()   # renders user info + nav in sidebar
+_cur_user  = get_current_user()
+
+if _saas_page == "admin" and _cur_user.get("role") == "admin":
+    show_admin_panel(_cur_user)
+    st.stop()
+elif _saas_page == "profile":
+    show_profile_page(_cur_user)
+    st.stop()
+
+# Show announcements (only on dashboard)
+show_announcements_banner()
+
+# ─────────────────────────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("📁 Source Files")
-    period_label = st.text_input("Return Period (e.g. Apr-26)", value="Apr-26")
+    import datetime as _dt
+    st.markdown("**Return Period**")
+    _months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    _years  = list(range(2020, 2031))
+    _now    = _dt.datetime.now()
+    _col_m, _col_y = st.columns(2)
+    with _col_m:
+        _sel_month = st.selectbox("Month", _months,
+                                  index=_now.month - 1,
+                                  label_visibility="collapsed")
+    with _col_y:
+        _sel_year = st.selectbox("Year", _years,
+                                 index=_years.index(_now.year) if _now.year in _years else 0,
+                                 label_visibility="collapsed")
+    period_label = f"{_sel_month}-{str(_sel_year)[2:]}"
+    st.caption(f"📅 {_dt.datetime.strptime(period_label, '%b-%y').strftime('%B %Y')}")
     st.markdown("---")
 
     load_mode = st.radio(
@@ -1201,10 +1461,17 @@ def build_doc_summary(sales_df, return_df=None, stock_df=None, cc_df=None, asset
         std = std.dropna(subset=["num"])
         std["num"] = std["num"].astype(int)
 
+        # Exact width of each invoice number as it actually appears in the
+        # source data — used instead of a group-wide max so a short number
+        # (e.g. 64474) is never padded with a leading zero borrowed from a
+        # longer number elsewhere in the same series (e.g. 134429).
+        pad_lookup = (std.drop_duplicates(subset=["prefix", "num"])
+                         .set_index(["prefix", "num"])["pad"])
+
         # Group by prefix — fully vectorised aggregation
         grp = std.groupby("prefix", sort=True).agg(
             min_n=("num", "min"), max_n=("num", "max"),
-            present=("num", "nunique"), pad=("pad", "max"),
+            present=("num", "nunique"),
         ).reset_index()
 
         grp["total_rng"] = grp["max_n"] - grp["min_n"] + 1
@@ -1212,9 +1479,10 @@ def build_doc_summary(sales_df, return_df=None, stock_df=None, cc_df=None, asset
 
         for _, r in grp.iterrows():
             pfx      = r["prefix"]
-            pad      = int(r["pad"])
             min_n    = int(r["min_n"])
             max_n    = int(r["max_n"])
+            min_pad  = int(pad_lookup.get((pfx, min_n), len(str(min_n))))
+            max_pad  = int(pad_lookup.get((pfx, max_n), len(str(max_n))))
             st_name, st_code = prefix_state_map.get(pfx, ("", ""))
 
             _series_display = (pfx[:series_length] if pfx and series_length else (pfx if pfx else "Numeric"))
@@ -1223,8 +1491,8 @@ def build_doc_summary(sales_df, return_df=None, stock_df=None, cc_df=None, asset
                 "Supplier State"     : st_name,
                 "Supplier State Code": st_code,
                 "Series"             : _series_display,
-                "From No"            : f"{pfx}{str(min_n).zfill(pad)}",
-                "To No"              : f"{pfx}{str(max_n).zfill(pad)}",
+                "From No"            : f"{pfx}{str(min_n).zfill(min_pad)}",
+                "To No"              : f"{pfx}{str(max_n).zfill(max_pad)}",
                 "Total Issued"       : int(r["total_rng"]),
                 "Cancelled"          : int(r["cancelled"]),
                 "Net Issued"         : int(r["present"]),
@@ -1240,12 +1508,13 @@ def build_doc_summary(sales_df, return_df=None, stock_df=None, cc_df=None, asset
                     np.arange(min_n, max_n + 1), list(present_set)
                 )
                 for n in missing:
+                    n = int(n)
                     cancelled_rows.append({
                         "Document Type"       : doc_type,
                         "Supplier State"      : st_name,
                         "Supplier State Code" : st_code,
                         "Series"              : pfx if pfx else "Numeric",
-                        "Cancelled Invoice No": f"{pfx}{str(int(n)).zfill(pad)}",
+                        "Cancelled Invoice No": f"{pfx}{n}",
                     })
 
     if sales_df is not None and not sales_df.empty and "inv_no" in sales_df.columns:
@@ -2516,13 +2785,14 @@ if "gstr1_results" in st.session_state:
     dc1, dc2 = st.columns([1, 2])
     with dc1:
         if excel_bytes:
-            st.download_button(
+            if st.download_button(
                 label="📥 Download GSTR-1 Excel (All Sections)",
                 data=excel_bytes,
                 file_name=excel_fname,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-            )
+            ):
+                log_download(get_current_user().get("username", ""), excel_fname)
         else:
             st.warning("Re-process data to enable download.")
     with dc2:

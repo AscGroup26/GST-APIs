@@ -13,6 +13,13 @@ __pycache__/
 *.pyc
 *.pyo
 
+# SaaS auth data — sensitive, never commit
+auth_config.yaml
+.saas_data/
+
+# Environment variables — contains SMTP credentials
+.env
+
 # Streamlit
 .streamlit/secrets.toml
 
