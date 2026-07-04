@@ -1,6 +1,6 @@
 [server]
 maxUploadSize = 500
-headless = false
+headless = true
 fileWatcherType = "none"
 maxMessageSize = 500
 
