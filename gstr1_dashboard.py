@@ -2198,11 +2198,18 @@ if process_btn:
         "doc"     : lambda: build_doc_summary(sales_df, return_df, stock_df, cc_raw, assets_raw),
         "tax"     : lambda: build_tax_summary(sales_df, _ret, _stk),
     }
+    # max_workers=2: each build_* holds its own copy of a large frame, so
+    # fewer concurrent tasks = lower peak memory (identical output, same tasks)
     _results = {}
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:
         fut_map = {ex.submit(fn): name for name, fn in _tasks.items()}
         for fut in as_completed(fut_map):
             _results[fut_map[fut]] = fut.result()
+
+    # Free raw input frames — every consumer ran inside the executor above.
+    # _tasks/fut_map lambdas close over these frames, so drop them first.
+    del _tasks, fut_map, cc_raw, assets_raw, return_df
+    import gc; gc.collect()
 
     b2b_df      = _results["b2b"]
     b2cl_df     = _results["b2cl"]
@@ -2225,6 +2232,11 @@ if process_btn:
     except Exception as _ce:
         st.warning(f"⚠️ Combined GSTR-1 build error: {_ce}")
         combined_df = pd.DataFrame()
+
+    # Free return/stock frames — build_hsn/build_combined were their last consumers.
+    # (sales_df stays: it is stored in session_state for the display section.)
+    del igst_returns, cgst_returns, stock_df, _igst, _cgst, _ret, _stk
+    gc.collect()
     update_progress(90, "⚡ 90% — Building Excel file…")
 
     # ── Merge sales return summary into B2CS ─────────────────────
