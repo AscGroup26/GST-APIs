@@ -246,6 +246,52 @@ def toggle_active(username: str, active: bool) -> bool:
     save_users(users)
     return True
 
+def update_role(username: str, role: str) -> tuple:
+    users = load_users()
+    if username not in users:
+        return False, "User not found"
+    if users[username].get("role") == role:
+        return False, f"User is already a {role}"
+    # Never leave the system without an active admin
+    if users[username].get("role") == "admin" and role != "admin":
+        other_admins = [u for u, d in users.items()
+                        if u != username and d.get("role") == "admin" and d.get("active", True)]
+        if not other_admins:
+            return False, "Cannot demote the only active admin"
+    users[username]["role"] = role
+    if role == "admin":
+        # same rule as add_user: admins are pre-verified
+        users[username]["email_verified"]     = True
+        users[username]["verification_token"] = None
+    save_users(users)
+    return True, f"Role changed to {role}"
+
+def set_email_verified(username: str) -> tuple:
+    users = load_users()
+    if username not in users:
+        return False, "User not found"
+    users[username]["email_verified"]     = True
+    users[username]["verification_token"] = None
+    save_users(users)
+    return True, "Email marked as verified"
+
+def resend_verification(username: str) -> tuple:
+    users = load_users()
+    if username not in users:
+        return False, "User not found"
+    u = users[username]
+    if u.get("email_verified", True):
+        return False, "Email is already verified"
+    email = u.get("email", "").strip()
+    if not email:
+        return False, "User has no email address on file"
+    token = u.get("verification_token") or secrets.token_urlsafe(32)
+    users[username]["verification_token"] = token
+    save_users(users)
+    if send_verification_email(email, u.get("name", username), token):
+        return True, f"Verification email sent to {email}"
+    return False, "Failed to send verification email — check SMTP settings (journalctl: grep MAIL)"
+
 def _is_expired(user_data: dict) -> bool:
     exp = user_data.get("expiry")
     if not exp or str(exp).lower() == "none":
@@ -1053,6 +1099,44 @@ def show_admin_panel(user: dict):
                         st.success("Password reset successfully.")
                     else:
                         st.warning("Enter a new password first.")
+
+                # ── Change role ───────────────────────────────────
+                if sel_u != user.get("username"):
+                    cur_role = u_data.get("role", "client")
+                    new_role = st.selectbox("Role", ["client", "admin"],
+                                            index=(1 if cur_role == "admin" else 0),
+                                            key="_saas_upd_role")
+                    if st.button("🔄 Change Role", use_container_width=True, key="_saas_btn_role"):
+                        ok, msg = update_role(sel_u, new_role)
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                else:
+                    st.caption("(Can't change your own role)")
+
+                # ── Email verification status / actions ───────────
+                if not u_data.get("email_verified", True):
+                    st.warning("📧 Email not verified — user cannot log in yet.")
+                    cv, cr = st.columns(2)
+                    with cv:
+                        if st.button("✅ Mark Verified", use_container_width=True, key="_saas_btn_verify"):
+                            ok, msg = set_email_verified(sel_u)
+                            if ok:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                    with cr:
+                        if st.button("📧 Resend Email", use_container_width=True, key="_saas_btn_resend"):
+                            ok, msg = resend_verification(sel_u)
+                            if ok:
+                                st.success(msg)
+                            else:
+                                st.error(msg)
+                else:
+                    st.caption("📧 Email verified ✓")
             else:
                 st.info("No users to manage.")
 
