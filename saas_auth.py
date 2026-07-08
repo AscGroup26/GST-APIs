@@ -497,23 +497,37 @@ def get_download_history(username: str = None) -> list:
 # ─────────────────────────────────────────────────────────────────
 # ANNOUNCEMENTS
 # ─────────────────────────────────────────────────────────────────
-def add_announcement(title: str, message: str, author: str):
+def add_announcement(title: str, message: str, author: str,
+                     severity: str = "info", expiry=None):
     anns = _load_json(_ANNOUNCEMENTS)
     anns.append({
-        "id"      : (max((a["id"] for a in anns), default=0) + 1),
-        "title"   : title,
-        "message" : message,
-        "author"  : author,
-        "created" : datetime.now().isoformat(timespec="seconds"),
+        "id"       : (max((a["id"] for a in anns), default=0) + 1),
+        "title"    : title,
+        "message"  : message,
+        "author"   : author,
+        "severity" : severity,
+        "expiry"   : str(expiry) if expiry else None,
+        "created"  : datetime.now().isoformat(timespec="seconds"),
     })
     _save_json(_ANNOUNCEMENTS, anns)
 
 def get_announcements() -> list:
-    return _load_json(_ANNOUNCEMENTS)
+    from datetime import date as _date
+    today = str(_date.today())
+    return [a for a in _load_json(_ANNOUNCEMENTS)
+            if not a.get("expiry") or a.get("expiry", "") >= today]
 
 def delete_announcement(ann_id: int):
     anns = [a for a in _load_json(_ANNOUNCEMENTS) if a.get("id") != ann_id]
     _save_json(_ANNOUNCEMENTS, anns)
+
+def force_logout_user(username: str) -> int:
+    """Remove all sessions for a given user. Returns number of sessions removed."""
+    sessions = _load_sessions()
+    before   = len(sessions)
+    sessions = {t: s for t, s in sessions.items() if s.get("username") != username}
+    _save_sessions(sessions)
+    return before - len(sessions)
 
 # ─────────────────────────────────────────────────────────────────
 # STREAMLIT — LOGIN PAGE
@@ -973,8 +987,15 @@ def saas_sidebar_nav() -> str:
 def show_announcements_banner():
     anns = get_announcements()
     if anns:
-        latest = anns[-1]
-        st.info(f"📢 **{latest['title']}** — {latest['message']}")
+        latest   = anns[-1]
+        severity = latest.get("severity", "info")
+        _msg     = f"📢 **{latest['title']}** — {latest['message']}"
+        if severity == "critical":
+            st.error(_msg)
+        elif severity == "warning":
+            st.warning(_msg)
+        else:
+            st.info(_msg)
 
 # ─────────────────────────────────────────────────────────────────
 # STREAMLIT — ADMIN PANEL
@@ -991,8 +1012,8 @@ def show_admin_panel(user: dict):
     </div>
     """, unsafe_allow_html=True)
 
-    tab_users, tab_login, tab_ann, tab_dl = st.tabs(
-        ["👥 Users", "📋 Login History", "📢 Announcements", "📥 Downloads"]
+    tab_users, tab_login, tab_ann, tab_dl, tab_sess = st.tabs(
+        ["👥 Users", "📋 Login History", "📢 Announcements", "📥 Downloads", "🔐 Sessions"]
     )
 
     # ── Tab 1: Users ─────────────────────────────────────────────
@@ -1002,13 +1023,25 @@ def show_admin_panel(user: dict):
 
         if users:
             # ── Search / filter bar ───────────────────────────────
-            _sf_col1, _sf_col2, _sf_col3 = st.columns([3, 2, 2])
-            _search_q    = _sf_col1.text_input("🔍 Search", placeholder="Username, name or email…",
-                                                label_visibility="collapsed", key="_usr_search")
-            _filter_role = _sf_col2.selectbox("Role", ["All", "Client", "Admin"],
-                                               label_visibility="collapsed", key="_usr_role")
+            _sf_col1, _sf_col2, _sf_col3, _sf_col4 = st.columns([3, 1.5, 1.5, 1.5])
+            _search_q      = _sf_col1.text_input("Search", placeholder="Username, name or email…",
+                                                  label_visibility="collapsed", key="_usr_search")
+            _filter_role   = _sf_col2.selectbox("Role", ["All", "Client", "Admin"],
+                                                 label_visibility="collapsed", key="_usr_role")
             _filter_active = _sf_col3.selectbox("Status", ["All", "Active", "Inactive"],
                                                  label_visibility="collapsed", key="_usr_status")
+
+            # Export button
+            import io as _io
+            _exp_rows = [{"Username": k, "Name": v.get("name",""), "Email": v.get("email",""),
+                          "Role": v.get("role",""), "Active": v.get("active", True),
+                          "Expiry": v.get("expiry","") or "Never", "Created": v.get("created","")}
+                         for k, v in users.items()]
+            _csv_buf = _io.StringIO()
+            pd.DataFrame(_exp_rows).to_csv(_csv_buf, index=False)
+            _sf_col4.download_button("⬇️ Export CSV", _csv_buf.getvalue(),
+                                     "users.csv", "text/csv", key="_usr_export",
+                                     use_container_width=True)
 
             # Apply filters
             def _matches(uname, u):
@@ -1024,11 +1057,49 @@ def show_admin_panel(user: dict):
                 return True
 
             filtered_users = {k: v for k, v in users.items() if _matches(k, v)}
+
+            # ── Bulk action bar ───────────────────────────────────
+            _sel_all = st.checkbox("Select All", key="_bulk_all",
+                                   value=all(st.session_state.get(f"_sel_{k}") for k in filtered_users) if filtered_users else False)
+            if _sel_all:
+                for _k in filtered_users:
+                    st.session_state[f"_sel_{_k}"] = True
+            elif not _sel_all and st.session_state.get("_bulk_all_prev"):
+                for _k in filtered_users:
+                    st.session_state.pop(f"_sel_{_k}", None)
+            st.session_state["_bulk_all_prev"] = _sel_all
+
+            _selected = [k for k in filtered_users if st.session_state.get(f"_sel_{k}")]
+            if _selected:
+                _ba1, _ba2, _ = st.columns([2, 2, 8])
+                if _ba1.button(f"⭕ Deactivate ({len(_selected)})", key="_bulk_deact"):
+                    for _su in _selected:
+                        toggle_active(_su, False)
+                        st.session_state.pop(f"_sel_{_su}", None)
+                    st.success(f"Deactivated {len(_selected)} user(s).")
+                    st.rerun()
+                if _ba2.button(f"🗑️ Delete ({len(_selected)})", key="_bulk_del", type="secondary"):
+                    st.session_state["_bulk_del_confirm"] = True
+                if st.session_state.get("_bulk_del_confirm"):
+                    st.warning(f"Delete **{len(_selected)}** user(s)? This cannot be undone.")
+                    _by, _bn, _ = st.columns([1, 1, 8])
+                    if _by.button("Yes, delete all", key="_bulk_del_yes", type="primary"):
+                        for _su in _selected:
+                            if _su != user.get("username"):
+                                remove_user(_su)
+                                st.session_state.pop(f"_sel_{_su}", None)
+                        st.session_state.pop("_bulk_del_confirm", None)
+                        st.success("Selected users deleted.")
+                        st.rerun()
+                    if _bn.button("Cancel", key="_bulk_del_no"):
+                        st.session_state.pop("_bulk_del_confirm", None)
+                        st.rerun()
+
             st.caption(f"{len(filtered_users)} of {len(users)} users")
 
             # Table header
-            h = st.columns([2, 2, 3, 1.2, 1, 1.5, 1.5, 0.8])
-            for col, label in zip(h, ["Username","Name","Email","Role","Active","Expiry","Created",""]):
+            h = st.columns([0.4, 1.8, 1.8, 2.8, 1.2, 0.7, 1.5, 1.5, 1.2])
+            for col, label in zip(h, ["", "Username", "Name", "Email", "Role", "Active", "Expiry", "Created", "Actions"]):
                 col.markdown(f"<span style='font-size:12px;color:#6b88a8;font-weight:700;'>{label}</span>",
                              unsafe_allow_html=True)
             st.markdown("<hr style='margin:4px 0 6px;border-color:#e2e8f0;'>", unsafe_allow_html=True)
@@ -1038,25 +1109,34 @@ def show_admin_panel(user: dict):
 
             cur_username = user.get("username", "")
             for uname, u in filtered_users.items():
-                c = st.columns([2, 2, 3, 1.2, 1, 1.5, 1.5, 0.6, 0.6])
-                c[0].markdown(f"`{uname}`")
-                c[1].write(u.get("name", ""))
-                c[2].write(u.get("email", ""))
-                c[3].write(u.get("role", "client").capitalize())
-                c[4].write("✅" if u.get("active", True) else "❌")
-                c[5].write(u.get("expiry") or "Never")
-                c[6].write(u.get("created", ""))
+                c = st.columns([0.4, 1.8, 1.8, 2.8, 1.2, 0.7, 1.5, 1.5, 0.6, 0.6])
+                # Checkbox — widget owns its own state via key, do not write back after instantiation
+                c[0].checkbox("", key=f"_sel_{uname}", label_visibility="collapsed")
+                c[1].markdown(f"`{uname}`")
+                c[2].write(u.get("name", ""))
+                c[3].write(u.get("email", ""))
+                c[4].write(u.get("role", "client").capitalize())
+                # Active toggle button
+                _is_active = u.get("active", True)
                 if uname == cur_username:
-                    c[7].write("—")
+                    c[5].write("✅")
+                elif c[5].button("✅" if _is_active else "❌", key=f"_tgl_{uname}",
+                                  help="Click to toggle active/inactive"):
+                    toggle_active(uname, not _is_active)
+                    st.rerun()
+                c[6].write(u.get("expiry") or "Never")
+                c[7].write(u.get("created", ""))
+                if uname == cur_username:
                     c[8].write("—")
+                    c[9].write("—")
                 else:
-                    if c[7].button("✏️", key=f"_edit_{uname}", help=f"Edit {uname}"):
+                    if c[8].button("✏️", key=f"_edit_{uname}", help=f"Edit {uname}"):
                         if st.session_state.get(f"_editing_{uname}"):
                             st.session_state.pop(f"_editing_{uname}", None)
                         else:
                             st.session_state[f"_editing_{uname}"] = True
                             st.session_state.pop(f"_confirm_del_{uname}", None)
-                    if c[8].button("🗑️", key=f"_del_{uname}", help=f"Delete {uname}"):
+                    if c[9].button("🗑️", key=f"_del_{uname}", help=f"Delete {uname}"):
                         st.session_state[f"_confirm_del_{uname}"] = True
                         st.session_state.pop(f"_editing_{uname}", None)
 
@@ -1080,16 +1160,33 @@ def show_admin_panel(user: dict):
                         _e_expiry = _ecols[4].date_input("Expiry (blank = never)",
                                         value=_exp_date, min_value=_edt.date.today(),
                                         key=f"_ex_{uname}", format="YYYY-MM-DD")
+                        # Password change row
+                        _pcols = st.columns([2, 2, 4])
+                        _e_newpwd  = _pcols[0].text_input("New Password",     type="password",
+                                        placeholder="Leave blank to keep current",
+                                        key=f"_ep1_{uname}")
+                        _e_confpwd = _pcols[1].text_input("Confirm Password", type="password",
+                                        placeholder="Re-enter new password",
+                                        key=f"_ep2_{uname}")
+
                         _save_col, _clr_col, _ = st.columns([1, 1, 6])
                         if _save_col.button("💾 Save", key=f"_esave_{uname}", type="primary"):
-                            ok, msg = update_user(uname, _e_name.strip(), _e_email.strip(),
-                                                  _e_role, _e_active, _e_expiry)
-                            if ok:
-                                st.session_state.pop(f"_editing_{uname}", None)
-                                st.success(f"User **{uname}** updated.")
-                                st.rerun()
+                            # Validate password if provided
+                            if _e_newpwd and _e_newpwd != _e_confpwd:
+                                st.error("Passwords do not match.")
+                            elif _e_newpwd and len(_e_newpwd) < 6:
+                                st.error("Password must be at least 6 characters.")
                             else:
-                                st.error(msg)
+                                ok, msg = update_user(uname, _e_name.strip(), _e_email.strip(),
+                                                      _e_role, _e_active, _e_expiry)
+                                if ok and _e_newpwd:
+                                    update_password(uname, _e_newpwd)
+                                if ok:
+                                    st.session_state.pop(f"_editing_{uname}", None)
+                                    st.success(f"User **{uname}** updated.")
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
                         if _clr_col.button("✖ Cancel", key=f"_ecancel_{uname}"):
                             st.session_state.pop(f"_editing_{uname}", None)
                             st.rerun()
@@ -1225,17 +1322,37 @@ def show_admin_panel(user: dict):
     # ── Tab 2: Login History ──────────────────────────────────────
     with tab_login:
         st.markdown("### Login History")
-        history = get_login_history()[::-1]  # newest first
+        history = get_login_history()[::-1]
         if history:
+            _lh_users = sorted(set(h.get("username","") for h in history))
+            _lc1, _lc2, _lc3, _lc4 = st.columns([2, 1.8, 1.8, 1.8])
+            _lh_user   = _lc1.selectbox("User", ["All"] + _lh_users,
+                                         label_visibility="collapsed", key="_lh_user")
+            _lh_from   = _lc2.date_input("From date", value=None,
+                                          label_visibility="collapsed", key="_lh_from")
+            _lh_to     = _lc3.date_input("To date", value=None,
+                                          label_visibility="collapsed", key="_lh_to")
+            _lh_status = _lc4.selectbox("Status", ["All", "Success", "Failed"],
+                                         label_visibility="collapsed", key="_lh_status")
+            # apply filters
             df_h = pd.DataFrame(history)
-            df_h["timestamp"] = pd.to_datetime(df_h["timestamp"]).dt.strftime("%Y-%m-%d %H:%M")
+            df_h["_ts"] = pd.to_datetime(df_h["timestamp"])
+            if _lh_user != "All":
+                df_h = df_h[df_h["username"] == _lh_user]
+            if _lh_from:
+                df_h = df_h[df_h["_ts"].dt.date >= _lh_from]
+            if _lh_to:
+                df_h = df_h[df_h["_ts"].dt.date <= _lh_to]
+            if _lh_status == "Success":
+                df_h = df_h[df_h["success"] == True]
+            elif _lh_status == "Failed":
+                df_h = df_h[df_h["success"] == False]
+            df_h["timestamp"] = df_h["_ts"].dt.strftime("%Y-%m-%d %H:%M")
             df_h["status"]    = df_h["success"].map({True: "✅ Success", False: "❌ Failed"})
-            df_h = df_h[["timestamp", "username", "status", "reason"]].rename(
-                columns={"timestamp": "Time", "username": "User",
-                         "status": "Status", "reason": "Reason"}
-            )
+            df_h = df_h[["timestamp","username","status","reason"]].rename(
+                columns={"timestamp":"Time","username":"User","status":"Status","reason":"Reason"})
             st.dataframe(df_h, use_container_width=True, hide_index=True, height=400)
-            st.caption(f"Total records: {len(history)}")
+            st.caption(f"Showing {len(df_h)} of {len(history)} records")
         else:
             st.info("No login history yet.")
 
@@ -1245,11 +1362,17 @@ def show_admin_panel(user: dict):
         with st.form("_saas_ann_form"):
             ann_title = st.text_input("Title")
             ann_msg   = st.text_area("Message", height=100)
-            ann_sub   = st.form_submit_button("📢 Post", type="primary")
+            _afc1, _afc2 = st.columns([2, 2])
+            ann_severity = _afc1.selectbox("Severity", ["info","warning","critical"])
+            ann_expiry   = _afc2.date_input("Expiry Date (optional, leave blank = permanent)",
+                                             value=None)
+            ann_sub = st.form_submit_button("📢 Post", type="primary")
 
         if ann_sub:
             if ann_title.strip() and ann_msg.strip():
-                add_announcement(ann_title.strip(), ann_msg.strip(), user.get("name", "Admin"))
+                add_announcement(ann_title.strip(), ann_msg.strip(),
+                                 user.get("name","Admin"), ann_severity,
+                                 ann_expiry if ann_expiry else None)
                 st.success("Announcement posted.")
                 st.rerun()
             else:
@@ -1258,11 +1381,14 @@ def show_admin_panel(user: dict):
         st.markdown("---")
         st.markdown("### Active Announcements")
         anns = get_announcements()[::-1]
+        _sev_icon = {"info": "ℹ️", "warning": "⚠️", "critical": "🔴"}
         if anns:
             for a in anns:
-                with st.expander(f"📢 {a['title']}  ·  {a['created'][:10]}"):
+                _icon = _sev_icon.get(a.get("severity","info"), "ℹ️")
+                _exp_label = f"  ·  Expires {a['expiry']}" if a.get("expiry") else ""
+                with st.expander(f"{_icon} {a['title']}  ·  {a['created'][:10]}{_exp_label}"):
                     st.write(a["message"])
-                    st.caption(f"Posted by: {a['author']}")
+                    st.caption(f"Severity: {a.get('severity','info').capitalize()}  |  Posted by: {a['author']}")
                     if st.button("🗑️ Delete", key=f"_saas_del_ann_{a['id']}"):
                         delete_announcement(a["id"])
                         st.rerun()
@@ -1275,14 +1401,56 @@ def show_admin_panel(user: dict):
         dl = get_download_history()[::-1]
         if dl:
             df_d = pd.DataFrame(dl)
-            df_d["timestamp"] = pd.to_datetime(df_d["timestamp"]).dt.strftime("%Y-%m-%d %H:%M")
-            df_d = df_d.rename(columns={
-                "timestamp": "Time", "username": "User", "filename": "File"
-            })
-            st.dataframe(df_d, use_container_width=True, hide_index=True, height=400)
-            st.caption(f"Total downloads: {len(dl)}")
+            df_d["_ts"] = pd.to_datetime(df_d["timestamp"])
+            _dl_users = sorted(set(df_d["username"].tolist()))
+            _dc1, _dc2, _dc3 = st.columns([2, 1.8, 1.8])
+            _dl_user = _dc1.selectbox("User", ["All"] + _dl_users,
+                                       label_visibility="collapsed", key="_dl_user")
+            _dl_from = _dc2.date_input("From date", value=None,
+                                        label_visibility="collapsed", key="_dl_from")
+            _dl_to   = _dc3.date_input("To date", value=None,
+                                        label_visibility="collapsed", key="_dl_to")
+            if _dl_user != "All":
+                df_d = df_d[df_d["username"] == _dl_user]
+            if _dl_from:
+                df_d = df_d[df_d["_ts"].dt.date >= _dl_from]
+            if _dl_to:
+                df_d = df_d[df_d["_ts"].dt.date <= _dl_to]
+            df_d["timestamp"] = df_d["_ts"].dt.strftime("%Y-%m-%d %H:%M")
+            df_d = df_d.rename(columns={"timestamp":"Time","username":"User","filename":"File"})
+            st.dataframe(df_d[["Time","User","File"]], use_container_width=True,
+                         hide_index=True, height=400)
+            st.caption(f"Showing {len(df_d)} of {len(dl)} downloads")
         else:
             st.info("No downloads recorded yet.")
+
+    # ── Tab 5: Sessions ───────────────────────────────────────────
+    with tab_sess:
+        st.markdown("### Active Sessions")
+        _sessions = _load_sessions()
+        if _sessions:
+            _sh = st.columns([1.5, 2, 2, 1.5])
+            for col, label in zip(_sh, ["Token","Username","Created","Action"]):
+                col.markdown(f"<span style='font-size:12px;color:#6b88a8;font-weight:700;'>{label}</span>",
+                             unsafe_allow_html=True)
+            st.markdown("<hr style='margin:4px 0 6px;border-color:#e2e8f0;'>", unsafe_allow_html=True)
+            _seen_users = set()
+            for t, s in sorted(_sessions.items(), key=lambda x: x[1].get("created",""), reverse=True):
+                _uname = s.get("username","")
+                _sr = st.columns([1.5, 2, 2, 1.5])
+                _sr[0].write(f"`...{t[-8:]}`")
+                _sr[1].write(_uname)
+                _sr[2].write(s.get("created","")[:16])
+                if _uname not in _seen_users:
+                    _seen_users.add(_uname)
+                    if _sr[3].button("⏏️ Logout", key=f"_sess_logout_{t}",
+                                     help=f"Force logout all sessions for {_uname}"):
+                        _n = force_logout_user(_uname)
+                        st.success(f"Logged out {_n} session(s) for **{_uname}**.")
+                        st.rerun()
+            st.caption(f"Total active sessions: {len(_sessions)}")
+        else:
+            st.info("No active sessions.")
 
 # ─────────────────────────────────────────────────────────────────
 # STREAMLIT — PROFILE PAGE
