@@ -193,8 +193,6 @@ def add_user(username: str, name: str, email: str, password: str,
         return False, "Username already exists"
     if _find_username_by_email(email):
         return False, "An account with this email address already exists"
-    is_admin   = (role == "admin")
-    token      = None if is_admin else secrets.token_urlsafe(32)
     users[username] = {
         "name"               : name,
         "email"              : email,
@@ -203,14 +201,14 @@ def add_user(username: str, name: str, email: str, password: str,
         "active"             : True,
         "expiry"             : str(expiry) if expiry else None,
         "created"            : str(date.today()),
-        "email_verified"     : is_admin,      # admins pre-verified
-        "verification_token" : token,
+        "email_verified"     : True,   # all accounts pre-verified — no email verification required
+        "verification_token" : None,
     }
-    if not is_admin:
-        # Send email BEFORE saving — roll back naturally if it fails
-        mail_ok = send_verification_email(email, name, token)
-        if not mail_ok:
-            return False, "Account could not be created: verification email failed to send. Please check your email address or contact the administrator."
+    # email verification disabled — accounts active immediately regardless of role
+    # if not is_admin:
+    #     mail_ok = send_verification_email(email, name, token)
+    #     if not mail_ok:
+    #         return False, "Account could not be created: verification email failed to send."
     save_users(users)
     return True, "User created successfully"
 
@@ -1003,6 +1001,31 @@ def show_admin_panel(user: dict):
         users = load_users()
 
         if users:
+            # ── Search / filter bar ───────────────────────────────
+            _sf_col1, _sf_col2, _sf_col3 = st.columns([3, 2, 2])
+            _search_q    = _sf_col1.text_input("🔍 Search", placeholder="Username, name or email…",
+                                                label_visibility="collapsed", key="_usr_search")
+            _filter_role = _sf_col2.selectbox("Role", ["All", "Client", "Admin"],
+                                               label_visibility="collapsed", key="_usr_role")
+            _filter_active = _sf_col3.selectbox("Status", ["All", "Active", "Inactive"],
+                                                 label_visibility="collapsed", key="_usr_status")
+
+            # Apply filters
+            def _matches(uname, u):
+                q = _search_q.strip().lower()
+                if q and q not in uname.lower() \
+                      and q not in u.get("name","").lower() \
+                      and q not in u.get("email","").lower():
+                    return False
+                if _filter_role != "All" and u.get("role","client").lower() != _filter_role.lower():
+                    return False
+                if _filter_active == "Active"   and not u.get("active", True): return False
+                if _filter_active == "Inactive" and     u.get("active", True): return False
+                return True
+
+            filtered_users = {k: v for k, v in users.items() if _matches(k, v)}
+            st.caption(f"{len(filtered_users)} of {len(users)} users")
+
             # Table header
             h = st.columns([2, 2, 3, 1.2, 1, 1.5, 1.5, 0.8])
             for col, label in zip(h, ["Username","Name","Email","Role","Active","Expiry","Created",""]):
@@ -1010,8 +1033,11 @@ def show_admin_panel(user: dict):
                              unsafe_allow_html=True)
             st.markdown("<hr style='margin:4px 0 6px;border-color:#e2e8f0;'>", unsafe_allow_html=True)
 
+            if not filtered_users:
+                st.info("No users match the current filter.")
+
             cur_username = user.get("username", "")
-            for uname, u in users.items():
+            for uname, u in filtered_users.items():
                 c = st.columns([2, 2, 3, 1.2, 1, 1.5, 1.5, 0.6, 0.6])
                 c[0].markdown(f"`{uname}`")
                 c[1].write(u.get("name", ""))
