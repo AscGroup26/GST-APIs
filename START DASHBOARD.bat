@@ -2,7 +2,7 @@
 title Modicare GSTR-1 Dashboard
 echo.
 echo  ==========================================
-echo   Modicare GSTR-1 Dashboard - ASC Consulting
+echo   Modicare GSTR-1 Dashboard - Asc Global Ai
 echo  ==========================================
 echo.
 echo  Starting dashboard, please wait...

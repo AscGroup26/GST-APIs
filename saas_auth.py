@@ -1,6 +1,6 @@
 """
 SaaS Authentication and User Management
-GSTR-1 Dashboard — ASC Consulting Pvt. Ltd.
+GSTR-1 Dashboard — Asc Global Ai
 """
 
 import hashlib
@@ -68,7 +68,7 @@ def _smtp_cfg() -> dict:
         "port"      : int(sec.get("port",  os.getenv("SMTP_PORT", 587))),
         "user"      : sec.get("user",      os.getenv("SMTP_USER", "")),
         "password"  : sec.get("password",  os.getenv("SMTP_PASS", "")),
-        "from_name" : sec.get("from_name", os.getenv("SMTP_FROM_NAME", "ASC Consulting")),
+        "from_name" : sec.get("from_name", os.getenv("SMTP_FROM_NAME", "Asc Global Ai")),
         "app_url"   : sec.get("app_url",   os.getenv("APP_URL", "http://localhost:8501")),
     }
 
@@ -89,7 +89,7 @@ def send_verification_email(to_email: str, to_name: str, token: str) -> bool:
 <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;
             overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.08);">
   <div style="background:#1f2f60;padding:28px 32px;text-align:center;">
-    <h1 style="color:#fff;margin:0;font-size:22px;">ASC Consulting</h1>
+    <h1 style="color:#fff;margin:0;font-size:22px;">Asc Global Ai</h1>
     <p style="color:rgba(255,255,255,.65);margin:5px 0 0;font-size:13px;">GSTR-1 Dashboard</p>
   </div>
   <div style="padding:32px;">
@@ -113,7 +113,7 @@ def send_verification_email(to_email: str, to_name: str, token: str) -> bool:
   </div>
   <div style="background:#f8fafc;padding:14px 32px;text-align:center;border-top:1px solid #e2e8f0;">
     <p style="color:#94adc8;font-size:11px;margin:0;">
-      © 2026 ASC Consulting Pvt. Ltd. · All rights reserved
+      © 2026 Asc Global Ai · All rights reserved
     </p>
   </div>
 </div>
@@ -221,6 +221,19 @@ def remove_user(username: str) -> tuple:
     del users[username]
     save_users(users)
     return True, "User removed"
+
+def update_user(username: str, name: str, email: str, role: str,
+                active: bool, expiry) -> tuple:
+    users = load_users()
+    if username not in users:
+        return False, "User not found"
+    users[username]["name"]   = name
+    users[username]["email"]  = email
+    users[username]["role"]   = role
+    users[username]["active"] = active
+    users[username]["expiry"] = str(expiry) if expiry else None
+    save_users(users)
+    return True, "User updated"
 
 def update_password(username: str, new_password: str) -> bool:
     users = load_users()
@@ -744,7 +757,7 @@ def _show_login_page():
 </div>
 
 <p style="margin-top:32px;font-size:11.5px;color:rgba(255,255,255,.24);position:relative;z-index:1;font-family:Arial,sans-serif;">
-    © 2026 ASC Consulting Pvt. Ltd. · All rights reserved
+    © 2026 Asc Global Ai · All rights reserved
 </p>
 </div>
 """, unsafe_allow_html=True)
@@ -753,7 +766,7 @@ def _show_login_page():
     with col_right:
         _, form_mid, _ = st.columns([1, 8, 1])
         with form_mid:
-            _show_reg = st.session_state.get("_saas_show_register", False)
+            _show_reg = False  # registration disabled from UI
 
             # ── Shared logo header ─────────────────────────────────
             st.markdown(f"""
@@ -884,21 +897,21 @@ def _show_login_page():
                                 log_login(resolved, False, result)
                                 st.error(result)
 
-                st.markdown("""
-<div style="display:flex;align-items:center;gap:14px;margin:28px 0 20px;font-family:Arial,sans-serif;">
-    <div style="flex:1;height:1px;background:#d8e2ef;"></div>
-    <span style="font-size:12px;color:#94adc8;letter-spacing:0.5px;">or</span>
-    <div style="flex:1;height:1px;background:#d8e2ef;"></div>
-</div>
-""", unsafe_allow_html=True)
-
-                if st.button("👤+  Create New Account", use_container_width=True):
-                    st.session_state["_saas_show_register"] = True
-                    st.rerun()
+                # "Create New Account" button hidden — accounts created by admin only
+                # st.markdown("""
+# <div style="display:flex;align-items:center;gap:14px;margin:28px 0 20px;font-family:Arial,sans-serif;">
+#     <div style="flex:1;height:1px;background:#d8e2ef;"></div>
+#     <span style="font-size:12px;color:#94adc8;letter-spacing:0.5px;">or</span>
+#     <div style="flex:1;height:1px;background:#d8e2ef;"></div>
+# </div>
+# """, unsafe_allow_html=True)
+                # if st.button("👤+  Create New Account", use_container_width=True):
+                #     st.session_state["_saas_show_register"] = True
+                #     st.rerun()
 
             st.markdown("""
 <p style="text-align:center;font-size:11.5px;color:#94ADC8;margin-top:32px;padding-bottom:24px;font-family:Arial,sans-serif;">
-    © 2026 ASC Consulting Pvt. Ltd. · All rights reserved
+    © 2026 Asc Global Ai · All rights reserved
 </p>
 """, unsafe_allow_html=True)
 
@@ -999,7 +1012,7 @@ def show_admin_panel(user: dict):
 
             cur_username = user.get("username", "")
             for uname, u in users.items():
-                c = st.columns([2, 2, 3, 1.2, 1, 1.5, 1.5, 0.8])
+                c = st.columns([2, 2, 3, 1.2, 1, 1.5, 1.5, 0.6, 0.6])
                 c[0].markdown(f"`{uname}`")
                 c[1].write(u.get("name", ""))
                 c[2].write(u.get("email", ""))
@@ -1009,11 +1022,54 @@ def show_admin_panel(user: dict):
                 c[6].write(u.get("created", ""))
                 if uname == cur_username:
                     c[7].write("—")
+                    c[8].write("—")
                 else:
-                    if c[7].button("🗑️", key=f"_del_{uname}", help=f"Delete {uname}"):
+                    if c[7].button("✏️", key=f"_edit_{uname}", help=f"Edit {uname}"):
+                        if st.session_state.get(f"_editing_{uname}"):
+                            st.session_state.pop(f"_editing_{uname}", None)
+                        else:
+                            st.session_state[f"_editing_{uname}"] = True
+                            st.session_state.pop(f"_confirm_del_{uname}", None)
+                    if c[8].button("🗑️", key=f"_del_{uname}", help=f"Delete {uname}"):
                         st.session_state[f"_confirm_del_{uname}"] = True
+                        st.session_state.pop(f"_editing_{uname}", None)
 
-                # Confirmation row
+                # Inline edit form
+                if st.session_state.get(f"_editing_{uname}"):
+                    with st.container():
+                        st.markdown(f"**Edit user: `{uname}`**")
+                        import datetime as _edt
+                        _ecols = st.columns([2, 2, 1.5, 1, 1.5])
+                        _e_name   = _ecols[0].text_input("Name",  value=u.get("name",""),  key=f"_en_{uname}")
+                        _e_email  = _ecols[1].text_input("Email", value=u.get("email",""), key=f"_ee_{uname}")
+                        _e_role   = _ecols[2].selectbox("Role", ["client", "admin"],
+                                        index=0 if u.get("role","client") == "client" else 1,
+                                        key=f"_er_{uname}")
+                        _e_active = _ecols[3].checkbox("Active", value=u.get("active", True), key=f"_ea_{uname}")
+                        _exp_val  = u.get("expiry")
+                        try:
+                            _exp_date = _edt.date.fromisoformat(_exp_val) if _exp_val else None
+                        except Exception:
+                            _exp_date = None
+                        _e_expiry = _ecols[4].date_input("Expiry (blank = never)",
+                                        value=_exp_date, min_value=_edt.date.today(),
+                                        key=f"_ex_{uname}", format="YYYY-MM-DD")
+                        _save_col, _clr_col, _ = st.columns([1, 1, 6])
+                        if _save_col.button("💾 Save", key=f"_esave_{uname}", type="primary"):
+                            ok, msg = update_user(uname, _e_name.strip(), _e_email.strip(),
+                                                  _e_role, _e_active, _e_expiry)
+                            if ok:
+                                st.session_state.pop(f"_editing_{uname}", None)
+                                st.success(f"User **{uname}** updated.")
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                        if _clr_col.button("✖ Cancel", key=f"_ecancel_{uname}"):
+                            st.session_state.pop(f"_editing_{uname}", None)
+                            st.rerun()
+                        st.markdown("<hr style='margin:6px 0;border-color:#e2e8f0;'>", unsafe_allow_html=True)
+
+                # Delete confirmation row
                 if st.session_state.get(f"_confirm_del_{uname}"):
                     with st.container():
                         st.warning(f"Delete **{uname}** ({u.get('name','')})? This cannot be undone.")

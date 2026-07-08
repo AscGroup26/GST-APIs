@@ -1,5 +1,5 @@
 ﻿"""
-GSTR-1 Dashboard for Modicare - ASC Consulting Pvt. Ltd.
+GSTR-1 Dashboard for Modicare - Asc Global Ai
 Processes monthly source data and generates GSTR-1 return sections.
 """
 
@@ -277,7 +277,7 @@ st.markdown("""
 st.markdown("""
 <div class="main-header">
     <h1>GSTR-1 Dashboard</h1>
-    <p>ASC Consulting Pvt. Ltd. &nbsp;|&nbsp; Upload monthly source files → Generate GSTR-1 return data</p>
+    <p>ASC Global AI &nbsp;|&nbsp; Upload monthly source files → Generate GSTR-1 return data</p>
 </div>
 """, unsafe_allow_html=True)
 
