@@ -1,0 +1,60 @@
+name: Deploy to Asc-webserver
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-asc-gstms
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Syntax & dependency check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile check
+        run: python -m py_compile gstr1_dashboard.py saas_auth.py
+
+  deploy:
+    name: Deploy to VM
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Pull, install, restart, health-check
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" 'bash -s' <<'DEPLOY'
+          set -e
+          cd /var/www/asc-gstms
+          git pull --ff-only
+          venv/bin/pip install -r requirements.txt --quiet
+          sudo systemctl restart asc-gstms
+          for i in $(seq 1 15); do
+            sleep 2
+            if curl -sf -o /dev/null http://127.0.0.1:8502; then
+              echo "App is up and responding."
+              exit 0
+            fi
+          done
+          echo "App did not come back after restart. Recent logs:"
+          journalctl -u asc-gstms -n 40 --no-pager
+          exit 1
+          DEPLOY
