@@ -1514,7 +1514,7 @@ def build_doc_summary(sales_df, return_df=None, stock_df=None, cc_df=None, asset
                         "Supplier State"      : st_name,
                         "Supplier State Code" : st_code,
                         "Series"              : pfx if pfx else "Numeric",
-                        "Cancelled Invoice No": f"{pfx}{n}",
+                        "Cancelled Invoice No": f"{pfx}{str(n).zfill(max_pad)}",
                     })
 
     if sales_df is not None and not sales_df.empty and "inv_no" in sales_df.columns:
