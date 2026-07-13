@@ -643,12 +643,12 @@ st.markdown("---")
 def classify_sales(df):
     # ── Copy ONLY the columns needed — avoids OOM on large DataFrames ──
     _work_cols = [c for c in
-        ["gstin2","fstcode","ship_stcod","ship_state","bill_stcod","bill_state","inv_no","inv_tot"]
+        ["gstin2","fstcode","ship_stcod","ship_state","bill_stcod","bill_state","inv_no","inv_tot","totval"]
         if c in df.columns]
-    w = df[_work_cols].copy()   # small copy: ~8 cols × N rows instead of all 43+ cols
+    w = df[_work_cols].copy()   # small copy: ~9 cols × N rows instead of all 43+ cols
 
     w["gstin2"] = w["gstin2"].astype(str).str.strip().replace({"nan":"","NaN":"","None":""})
-    for col in ["fstcode","ship_stcod","inv_tot"]:
+    for col in ["fstcode","ship_stcod","inv_tot","totval"]:
         if col in w.columns:
             w[col] = pd.to_numeric(w[col], errors="coerce").fillna(0)
     w["fstcode"]    = w["fstcode"].astype(int)
@@ -663,8 +663,9 @@ def classify_sales(df):
 
     has_gstin   = w["gstin2"].str.len() == 15
     inter_state = w["fstcode"] != w["ship_stcod"]
-    inv_taxable = w.groupby("inv_no")["inv_tot"].transform("sum")
-    large_inv   = inv_taxable >= 100000
+    # Use total invoice value (taxable + taxes) for B2CL threshold check
+    inv_total   = w.groupby("inv_no")["totval"].transform("first")
+    large_inv   = inv_total >= 100000
 
     gstr1_section = np.where(
         has_gstin, "B2B",
