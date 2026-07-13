@@ -1507,14 +1507,33 @@ def build_doc_summary(sales_df, return_df=None, stock_df=None, cc_df=None, asset
                 missing = np.setdiff1d(
                     np.arange(min_n, max_n + 1), list(present_set)
                 )
+                # Sorted arrays of present numbers + their pad widths for
+                # nearest-neighbour pad inference — avoids over-padding when
+                # the series crosses a digit-length boundary (e.g. 79xxx → 100xxx)
+                _pnums = np.array(sorted(present_set), dtype=np.int64)
+                _ppads = np.array(
+                    [int(pad_lookup.get((pfx, int(pn)), len(str(int(pn))))) for pn in _pnums],
+                    dtype=np.int32
+                )
                 for n in missing:
                     n = int(n)
+                    _idx = int(np.searchsorted(_pnums, n))
+                    if _idx == 0:
+                        _infer_pad = int(_ppads[0])
+                    elif _idx >= len(_pnums):
+                        _infer_pad = int(_ppads[-1])
+                    else:
+                        # Pick the closer neighbour's pad
+                        _infer_pad = int(
+                            _ppads[_idx] if (_pnums[_idx] - n) <= (n - _pnums[_idx - 1])
+                            else _ppads[_idx - 1]
+                        )
                     cancelled_rows.append({
                         "Document Type"       : doc_type,
                         "Supplier State"      : st_name,
                         "Supplier State Code" : st_code,
                         "Series"              : pfx if pfx else "Numeric",
-                        "Cancelled Invoice No": f"{pfx}{str(n).zfill(max_pad)}",
+                        "Cancelled Invoice No": f"{pfx}{str(n).zfill(_infer_pad)}",
                     })
 
     if sales_df is not None and not sales_df.empty and "inv_no" in sales_df.columns:
