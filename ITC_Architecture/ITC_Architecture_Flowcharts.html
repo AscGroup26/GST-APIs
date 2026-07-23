@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ITC Architecture Flowcharts</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+body{font-family:Segoe UI,Arial,sans-serif;background:#f0f4f8;margin:0;padding:20px;color:#1a2a3a}
+h1{text-align:center;color:#1f2f60;border-bottom:3px solid #f9be3e;padding-bottom:12px}
+h2{color:#fff;background:#1f2f60;padding:10px 16px;border-radius:6px;margin-top:40px}
+.box{background:#fff;border:1px solid #d0dae6;border-radius:10px;padding:24px;margin:20px 0;overflow-x:auto}
+.subtitle{text-align:center;color:#555}
+</style>
+</head>
+<body>
+<h1>ITC Reconciliation — Architecture Flowcharts</h1>
+<p class="subtitle">Open this file in Chrome or Edge — diagrams render automatically</p>
+
+<h2>1. System Architecture</h2>
+<div class="box"><pre class="mermaid">
+flowchart TB
+    USER([User]) --> UI[itc_dashboard.py]
+    UI --> AUTH[saas_auth.py]
+    AUTH --> R1[R1 GSTR-1]
+    AUTH --> ITC[ITC Module]
+    ITC --> ENG[engine.py]
+    ENG --> S1[step1_mrr.py]
+    ENG --> S2[step2_expenses.py]
+    ENG --> S3[step3_books.py]
+    ENG --> S4[step4_reco.py]
+    ENG --> S5[step5_stock.py]
+    ENG --> XLS[Excel Report]
+</pre></div>
+
+<h2>2. Run Button Logic Flow</h2>
+<div class="box"><pre class="mermaid">
+flowchart TD
+    START([Click Run ITC Reconciliation]) --> A[Read uploaded files]
+    A --> S2[Step 2 Expenses]
+    S2 --> S1[Step 1 MRR]
+    S1 --> S3[Step 3 Books]
+    S3 --> S4[Step 4 GSTR-2B Match]
+    S4 --> S5[Step 5 Stock]
+    S5 --> SUM[ITC Summary]
+    SUM --> DONE([Results + Download])
+</pre></div>
+
+<h2>3. File to Logic Map</h2>
+<div class="box"><pre class="mermaid">
+flowchart LR
+    F1[1.MRR.csv] --> S1[step1_mrr.py]
+    F2[2.MRRReturn.csv] --> S1
+    F4[4.Expenses.xlsx] --> S2[step2_expenses.py]
+    S1 --> S3[step3_books.py]
+    S2 --> S3
+    F6[6.GSTR-2B.xlsx] --> S4[step4_reco.py]
+    S3 --> S4
+    F7[7.Stock.xlsx] --> S5[step5_stock.py]
+    S4 --> S5
+    S5 --> OUT[Excel Report]
+</pre></div>
+
+<h2>4. Full Logic Pipeline</h2>
+<div class="box"><pre class="mermaid">
+flowchart TD
+    subgraph S2[Step 2 - Expenses]
+        A1[File 4: Working All Type sheet] --> A2[Categorize rows]
+        A2 --> A3[CON = GSTIN + Bill No]
+        A3 --> A4[Ineligible Debit only]
+    end
+    subgraph S1[Step 1 - MRR]
+        B1[Files 1+2 CSV] --> B2[Combine + Negate returns]
+        B2 --> B3[Map Voucher from Step 2]
+        B3 --> B4[Pivot deduplicate]
+    end
+    subgraph S3[Step 3 - Books]
+        C1[Merge MRR + Expenses] --> C2[Skip duplicate CON]
+        C2 --> C3[Aggregate by CON]
+    end
+    subgraph S4[Step 4 - GSTR-2B]
+        D1[Match CON key] --> D2[Compare taxes]
+        D2 --> D3[Assign Remarks]
+    end
+    subgraph S5[Step 5 - Stock]
+        E1[Stock received] --> E2[GIT mapping]
+        E2 --> E3[TAKEN IN 3B]
+    end
+    S2 --> S1 --> S3 --> S4 --> S5
+</pre></div>
+
+<h2>5. CON Key Match Logic</h2>
+<div class="box"><pre class="mermaid">
+flowchart TD
+    ROW[Books Row] --> K[CON = GSTIN + Invoice]
+    K --> S{Found in GSTR-2B?}
+    S -->|No| R1[Not in 2B]
+    S -->|Yes| T{Tax match?}
+    T -->|All match| R2[PERFECT MATCHED]
+    T -->|Partial| R3[PROBABLE MATCHED]
+    T -->|Different| R4[Mismatched]
+</pre></div>
+
+<h2>6. Excel Report Creation</h2>
+<div class="box"><pre class="mermaid">
+flowchart TD
+    DL[Download Excel] --> EXP[export_to_excel]
+    EXP --> S1[S1 MRR sheets]
+    EXP --> S2[S2 Expense sheets]
+    EXP --> S3[S3 Books sheets]
+    EXP --> S4[S4 Reconciliation sheets]
+    EXP --> S5[S5 Stock sheets]
+    EXP --> SUM[ITC Summary]
+    S1 & S2 & S3 & S4 & S5 & SUM --> FILE[ITC_Reconciliation_Report.xlsx]
+</pre></div>
+
+<script>mermaid.initialize({startOnLoad:true,theme:'default'});</script>
+</body>
+</html>

@@ -933,7 +933,7 @@ def _show_login_page():
 def saas_sidebar_nav() -> str:
     """
     Render user info + navigation in the sidebar.
-    Returns the selected page: 'dashboard', 'admin', or 'profile'.
+    Returns the selected page: 'gstr1', 'itc', 'admin', or 'profile'.
     """
     user = get_current_user()
     role = user.get("role", "client")
@@ -958,9 +958,9 @@ def saas_sidebar_nav() -> str:
         unsafe_allow_html=True,
     )
 
-    nav_options = ["📊 Dashboard", "👤 Profile"]
+    nav_options = ["📋 R1 (GSTR-1)", "📥 ITC", "👤 Profile"]
     if role == "admin":
-        nav_options.insert(1, "⚙️ Admin Panel")
+        nav_options.insert(2, "⚙️ Admin Panel")
 
     sel = st.sidebar.radio(
         "Navigate",
@@ -979,7 +979,9 @@ def saas_sidebar_nav() -> str:
         return "admin"
     if "Profile" in sel:
         return "profile"
-    return "dashboard"
+    if "ITC" in sel:
+        return "itc"
+    return "gstr1"
 
 # ─────────────────────────────────────────────────────────────────
 # STREAMLIT — ANNOUNCEMENTS BANNER

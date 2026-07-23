@@ -26,3 +26,6 @@ auth_config.yaml
 # OS files
 .DS_Store
 Thumbs.db
+
+# Markdown docs
+*.md

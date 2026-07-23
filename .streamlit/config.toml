@@ -1,7 +1,8 @@
 [server]
 maxUploadSize = 500
 headless = true
-fileWatcherType = "none"
+fileWatcherType = "auto"
+runOnSave = true
 maxMessageSize = 500
 
 [browser]

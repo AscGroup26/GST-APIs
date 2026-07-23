@@ -1,4 +1,4 @@
-﻿"""
+"""
 GSTR-1 Dashboard for Modicare - Asc Global Ai
 Processes monthly source data and generates GSTR-1 return sections.
 """
@@ -37,7 +37,7 @@ def _get_page_icon():
         return "📊"
 
 st.set_page_config(
-    page_title="ASC GSTR-1 Dashboard",
+    page_title="ASC GST Platform",
     page_icon=_get_page_icon(),
     layout="wide",
     initial_sidebar_state="expanded",
@@ -50,6 +50,7 @@ from saas_auth import (
     saas_auth_gate, saas_sidebar_nav, show_admin_panel,
     show_profile_page, show_announcements_banner, log_download, get_current_user,
 )
+from itc_dashboard import show_itc_dashboard
 saas_auth_gate()   # shows login page + st.stop() if not authenticated
 
 st.markdown("""
@@ -504,7 +505,7 @@ GSTIN_STATE_MAP = {
 }
 
 # ─────────────────────────────────────────────────────────────────
-# PAGE ROUTING — admin / profile / dashboard
+# PAGE ROUTING — admin / profile / gstr1 / itc
 # ─────────────────────────────────────────────────────────────────
 _saas_page = saas_sidebar_nav()   # renders user info + nav in sidebar
 _cur_user  = get_current_user()
@@ -515,8 +516,11 @@ if _saas_page == "admin" and _cur_user.get("role") == "admin":
 elif _saas_page == "profile":
     show_profile_page(_cur_user)
     st.stop()
+elif _saas_page == "itc":
+    show_itc_dashboard(_cur_user)
+    st.stop()
 
-# Show announcements (only on dashboard)
+# Show announcements (only on GSTR-1 dashboard)
 show_announcements_banner()
 
 # ─────────────────────────────────────────────────────────────────
