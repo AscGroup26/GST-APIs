@@ -51,7 +51,10 @@ from saas_auth import (
     show_profile_page, show_announcements_banner, log_download, get_current_user,
 )
 from itc_dashboard import show_itc_dashboard
-from gstr3b_dashboard import show_gstr3b_dashboard
+try:
+    from gstr3b_dashboard import show_gstr3b_dashboard
+except ModuleNotFoundError:
+    show_gstr3b_dashboard = None
 saas_auth_gate()   # shows login page + st.stop() if not authenticated
 
 st.markdown("""
@@ -521,7 +524,10 @@ elif _saas_page == "itc":
     show_itc_dashboard(_cur_user)
     st.stop()
 elif _saas_page == "gstr3b":
-    show_gstr3b_dashboard(_cur_user)
+    if show_gstr3b_dashboard:
+        show_gstr3b_dashboard(_cur_user)
+    else:
+        st.warning("GSTR-3B module is not available yet.")
     st.stop()
 
 # Show announcements (only on GSTR-1 dashboard)
