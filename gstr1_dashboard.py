@@ -51,6 +51,7 @@ from saas_auth import (
     show_profile_page, show_announcements_banner, log_download, get_current_user,
 )
 from itc_dashboard import show_itc_dashboard
+from gstr3b_dashboard import show_gstr3b_dashboard
 saas_auth_gate()   # shows login page + st.stop() if not authenticated
 
 st.markdown("""
@@ -518,6 +519,9 @@ elif _saas_page == "profile":
     st.stop()
 elif _saas_page == "itc":
     show_itc_dashboard(_cur_user)
+    st.stop()
+elif _saas_page == "gstr3b":
+    show_gstr3b_dashboard(_cur_user)
     st.stop()
 
 # Show announcements (only on GSTR-1 dashboard)
@@ -996,8 +1000,9 @@ def build_stock_transfer(stock_df):
     df = stock_df.copy()
     df = num(df, TAX_COLS + ["freight"])
 
-    if "totval" not in df.columns:
-        df["totval"] = 0
+    for _c in ["inv_qty","inv_tot","igstamt","cgstamt","sgstamt","ugstamt","cessamt","totval"]:
+        if _c not in df.columns:
+            df[_c] = 0
     grp = df.groupby(
         [c for c in ["gstin","mscname","inv_no","inv_date","fstate","fstcode","gstin2","ship_state","ship_stcod","hsncode","taxslab"] if c in df.columns],
         as_index=False
