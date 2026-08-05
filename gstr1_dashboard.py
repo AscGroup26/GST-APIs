@@ -2268,9 +2268,15 @@ if process_btn:
         st.warning(f"⚠️ Combined GSTR-1 build error: {_ce}")
         combined_df = pd.DataFrame()
 
-    # Free return/stock frames — build_hsn/build_combined were their last consumers.
-    # (sales_df stays: it is stored in session_state for the display section.)
-    del igst_returns, cgst_returns, stock_df, _igst, _cgst, _ret, _stk
+    # Display section only needs these 4 totals from sales_df, not the raw frame —
+    # compute them now so we can free sales_df instead of keeping it in session_state.
+    _total_taxable = sales_df["inv_tot"].sum()   if not sales_df.empty and "inv_tot"   in sales_df.columns else 0
+    _total_igst    = sales_df["igstamt"].sum()   if not sales_df.empty and "igstamt"   in sales_df.columns else 0
+    _total_cgst    = sales_df["cgstamt"].sum()   if not sales_df.empty and "cgstamt"   in sales_df.columns else 0
+    _total_sgst    = sales_df["sgstamt"].sum()   if not sales_df.empty and "sgstamt"   in sales_df.columns else 0
+
+    # Free return/stock/sales frames — all consumers (build_* calls, totals above) are done.
+    del igst_returns, cgst_returns, stock_df, sales_df, _igst, _cgst, _ret, _stk
     gc.collect()
     update_progress(90, "⚡ 90% — Building Excel file…")
 
@@ -2303,7 +2309,8 @@ if process_btn:
     # ── Save all results + pre-built Excel to session state ──
     st.session_state["gstr1_results"] = {
         "period_label" : period_label,
-        "sales_df"     : sales_df,
+        "total_taxable" : _total_taxable, "total_igst": _total_igst,
+        "total_cgst"    : _total_cgst,    "total_sgst": _total_sgst,
         "b2b_df"          : b2b_df,    "b2cl_df"        : b2cl_df,    "b2cs_df"    : b2cs_df,
         "sales_return_df" : sales_return_summary_df,
         "cdnr_df"         : cdnr_df,   "cdnur_df"       : cdnur_df,   "st_df"      : st_df,
@@ -2332,7 +2339,6 @@ if process_btn:
 if "gstr1_results" in st.session_state:
     r            = st.session_state["gstr1_results"]
     period_label = r["period_label"]
-    sales_df     = r["sales_df"]
     b2b_df       = r["b2b_df"];    b2cl_df      = r["b2cl_df"];   b2cs_df    = r["b2cs_df"]
     cdnr_df      = r["cdnr_df"];   cdnur_df     = r["cdnur_df"];  st_df      = r["st_df"]
     cc_df        = r["cc_df"];     assets_df    = r["assets_df"]; hsn_df     = r["hsn_df"]
@@ -2429,10 +2435,10 @@ if "gstr1_results" in st.session_state:
 
     # ── Summary metrics ───────────────────────────────────────────
     st.markdown("## 📈 GSTR-1 Summary — " + period_label)
-    total_taxable = sales_df["inv_tot"].sum() if not sales_df.empty and "inv_tot" in sales_df.columns else 0
-    total_igst    = sales_df["igstamt"].sum() if not sales_df.empty and "igstamt" in sales_df.columns else 0
-    total_cgst    = sales_df["cgstamt"].sum() if not sales_df.empty and "cgstamt" in sales_df.columns else 0
-    total_sgst    = sales_df["sgstamt"].sum() if not sales_df.empty and "sgstamt" in sales_df.columns else 0
+    total_taxable = r.get("total_taxable", 0)
+    total_igst    = r.get("total_igst", 0)
+    total_cgst    = r.get("total_cgst", 0)
+    total_sgst    = r.get("total_sgst", 0)
     total_tax     = total_igst + total_cgst + total_sgst
 
     m1,m2,m3,m4,m5,m6 = st.columns(6)
