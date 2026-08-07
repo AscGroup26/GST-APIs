@@ -161,18 +161,19 @@ def format_eligible_books(books):
 
 S2_COMBINED_REMARKS = frozenset({"Expense", "Ineligible", "Purchase"})
 
-S3_COMBINED_SOURCES = frozenset({"Expense", "MRR", "MRR Return"})
-S3_COMBINED_CATEGORIES = frozenset({"Expense", "Purchase", "Purchase Return"})
+S3_COMBINED_SOURCES = frozenset({"Expense", "MRR", "MRR Return", "Import"})
+S3_COMBINED_CATEGORIES = frozenset({"Expense", "Purchase", "Purchase Return", "Import"})
 S3_INELIGIBLE_SOURCE = "Expense-Ineligible"
 
 BOOKS_COMBINED_CATEGORIES = {
-    "Expense", "Ineligible", "Purchase", "Purchase Return",
+    "Expense", "Ineligible", "Purchase", "Purchase Return", "Import",
 }
 
 S3_SOURCE_CATEGORY = {
     "Expense": "Expense",
     "MRR": "Purchase",
     "MRR Return": "Purchase Return",
+    "Import": "Import",
 }
 
 
@@ -220,6 +221,8 @@ def _normalize_asc_remark(val):
         return "Ineligible"
     if s == "purchase":
         return "Purchase"
+    if s == "import":
+        return "Import"
     return str(val or "").strip()
 
 
@@ -310,6 +313,28 @@ def _combined_s2_purchase_rows(all_expenses, data_month, mrr_cons=None):
         if not _is_asc_purchase(asc):
             continue
         rows.append(_row_from_s2_combined(row, data_month, source="Expense"))
+    return rows
+
+
+def _combined_s2_import_rows(all_expenses, data_month):
+    """S2 Import rows for Combined - Master sheet Category = Import.
+
+    Import ITC (customs duty & clearance) has no domestic supplier GSTIN, so
+    it is kept separate from Expense/Purchase rather than folded into either.
+    Detected via Category directly (set once by categorize_entry), NOT via
+    Asc Remarks/Remark - Import rows carry a blank Remark in S2_All_Expenses
+    by design (see assign_remark in step2_expenses.py), so routing must not
+    depend on that column.
+    """
+    if all_expenses is None or all_expenses.empty:
+        return []
+    rows = []
+    for _, row in all_expenses.iterrows():
+        if _skip_incomplete_s2_row(row):
+            continue
+        if str(row.get("Category", "")).strip() != "Import":
+            continue
+        rows.append(_row_from_s2_combined(row, data_month, source="Import"))
     return rows
 
 
@@ -457,23 +482,25 @@ def _combined_mrr_rows(mrr_pivot, data_month):
 
 
 def _filter_combined_books(books):
-    """Combined sheet: S2 (Expense/Ineligible remarks) + full MRR + MRR Return."""
+    """Combined sheet: S2 (Expense/Ineligible/Import remarks) + full MRR + MRR Return."""
     if books is None or books.empty:
         return books
     if "Source" not in books.columns:
         return books
-    return books[books["Source"].isin(["Expense", "Expense-Ineligible", "MRR", "MRR Return"])].copy()
+    return books[books["Source"].isin(
+        ["Expense", "Expense-Ineligible", "MRR", "MRR Return", "Import"]
+    )].copy()
 
 
 def _filter_combined_remarks(books):
-    """S2: Remark Expense/Ineligible only. MRR rows use MRR / MRR Return remarks."""
+    """S2: Remark Expense/Ineligible only. MRR and Import rows pass through unconditionally."""
     if books is None or books.empty or "Remarks" not in books.columns:
         return books
-    mrr_mask = books["Source"].isin(["MRR", "MRR Return"])
+    passthrough_mask = books["Source"].isin(["MRR", "MRR Return", "Import"])
     s2_mask = books["Source"].isin(["Expense", "Expense-Ineligible"]) & (
         books["Remarks"].astype(str).isin(S2_COMBINED_REMARKS)
     )
-    return books[mrr_mask | s2_mask].copy()
+    return books[passthrough_mask | s2_mask].copy()
 
 
 def _filter_s2_expense_books(books):
@@ -614,7 +641,10 @@ def build_books_from_sources(
     books_mrr = _aggregate_books(
         _combined_mrr_rows(mrr_pivot, data_month), group_keys=["CON", "Category"]
     )
-    combined_parts = [books_s2_eligible, books_combined_ineligible, books_mrr]
+    books_s2_import = _aggregate_books(
+        _combined_s2_import_rows(all_expenses, data_month), group_keys=None,
+    )
+    combined_parts = [books_s2_eligible, books_combined_ineligible, books_mrr, books_s2_import]
     books_s2 = pd.concat(
         [part for part in combined_parts if len(part)], ignore_index=True
     )

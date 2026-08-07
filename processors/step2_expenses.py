@@ -105,10 +105,18 @@ def _normalize_voucher_type(vt):
 
 
 def assign_remark(row):
-    """Remark options: Purchase, Expense, ISD, Import, RCM, Ineligible."""
+    """Remark options: Purchase, Expense, ISD, RCM, Ineligible.
+
+    Import is deliberately left BLANK here - Category already carries
+    'Import' and that is what routes these rows into S3_Books_Combined
+    (see _combined_s2_import_rows in step3_books.py, which reads Category
+    directly rather than this Remark column).
+    """
     rate_label = str(row.get("Rate Label", "") or "")
     if is_ineligible_debit(rate_label) or row.get("Category") == "Ineligible":
         return "Ineligible"
+    if row.get("Category") == "Import":
+        return ""
     return row["Category"]
 
 
