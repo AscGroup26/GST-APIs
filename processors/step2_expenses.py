@@ -159,23 +159,29 @@ def _is_blank_cell(val):
 
 
 def _skip_expense_output_row(row):
-    """Drop footer totals and journal summary lines from S2 export."""
+    """
+    Drop footer totals and blank journal summary lines from S2 export.
+
+    A row that carries its own Voucher No. is a genuine transaction and must
+    never be dropped just because GSTIN and Bill No are blank - that is
+    normal for non-invoice journal entries (bank charges, salary,
+    depreciation and other postings with no supplier bill behind them), not
+    a sign of a blank report footer. Only a row with NO identifying value at
+    all - no GSTIN, no Bill No, no Particulars, and no Voucher No. - is a
+    genuine blank/footer line and gets dropped.
+    """
     gstin = row.get("GSTIN/UIN", "")
     bill_no = row.get("Bill No", "")
     particulars = row.get("Particulars", "")
-    voucher_type = row.get("Voucher Type", "")
     voucher_no = row.get("Voucher No.", "")
 
     if not _is_blank_cell(gstin) or not _is_blank_cell(bill_no) or not _is_blank_cell(particulars):
         return False
 
-    if _is_blank_cell(voucher_type) and _is_blank_cell(voucher_no):
-        return True
+    if not _is_blank_cell(voucher_no):
+        return False
 
-    if not _is_blank_cell(voucher_type) and _is_blank_cell(gstin) and _is_blank_cell(bill_no):
-        return True
-
-    return False
+    return True
 
 
 def process_step2(expense_file):

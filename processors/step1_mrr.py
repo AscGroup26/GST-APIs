@@ -13,9 +13,22 @@ def _is_blank_voucher(val):
 
 
 def _invoice_tail(val):
+    """The segment AFTER the last '/' - matches invoice numbers formatted
+    'FY/SERIAL' (e.g. '2026-27/0345' -> '0345')."""
     s = str(val or "").strip().upper()
     if "/" in s:
         s = s.rsplit("/", 1)[-1]
+    return re.sub(r"[^A-Z0-9]", "", s)
+
+
+def _invoice_head(val):
+    """The segment BEFORE the first '/' - matches the other common invoice
+    convention, 'SERIAL/FY' (e.g. '617/26-27' -> '617'). Without this,
+    invoices in this format would only ever produce '_invoice_tail' == the
+    fiscal-year fragment ('2627'), which never matches a real Bill No."""
+    s = str(val or "").strip().upper()
+    if "/" in s:
+        s = s.split("/", 1)[0]
     return re.sub(r"[^A-Z0-9]", "", s)
 
 
@@ -35,6 +48,9 @@ def _expense_lookup_keys(gstin, invoice_no):
     tail = _invoice_tail(inv)
     if tail:
         keys.append(g + tail)
+    head = _invoice_head(inv)
+    if head and head != tail:
+        keys.append(g + head)
     return keys
 
 
@@ -245,6 +261,25 @@ def process_step1(mrr_file, mrr_return_file, expense_df=None):
     )
     pivot["con"] = pivot.apply(lambda r: make_con_key(r["Supplier GSTIN"], r["Invoice No."]), axis=1)
 
+    # Voucher No. / Voucher Date on MRR rows are NEVER carried by the MRR/MRRR
+    # CSVs themselves — those files have no voucher column at all. Both fields
+    # are looked up from Master Expenses by matching (GSTIN + supplier invoice
+    # no.). A blank Voucher No./Date means no Master Expenses row matched that
+    # GSTIN+invoice combination — either it hasn't been booked in Expenses yet,
+    # or it's booked under a differently formatted invoice reference. Surface
+    # the match rate and a sample of misses so that can be told apart from a
+    # genuine bug at a glance.
+    has_voucher = ~pivot["Voucher No."].apply(_is_blank_voucher)
+    voucher_matched = int(has_voucher.sum())
+    voucher_unmatched = int((~has_voucher).sum())
+    unmatched_cols = ["Supplier GSTIN", "Supplier Name", "Invoice No.", "Ship State",
+                      "Taxable Value", "Remark"]
+    unmatched_cols = [c for c in unmatched_cols if c in pivot.columns]
+    voucher_unmatched_df = (
+        pivot.loc[~has_voucher, unmatched_cols].head(200).reset_index(drop=True)
+        if unmatched_cols else pd.DataFrame()
+    )
+
     summary = {
         "mrr_rows": len(mrr),
         "mrr_return_rows": len(mrr_return),
@@ -254,11 +289,21 @@ def process_step1(mrr_file, mrr_return_file, expense_df=None):
         "total_igst": float(pivot["IGST"].sum()),
         "total_cgst": float(pivot["CGST"].sum()),
         "total_sgst": float(pivot["SGST"].sum()),
+        "voucher_matched_rows": voucher_matched,
+        "voucher_unmatched_rows": voucher_unmatched,
+        "voucher_match_pct": (
+            round(100.0 * voucher_matched / len(pivot), 1) if len(pivot) else 0.0
+        ),
+        "voucher_lookup_source": (
+            "Master Expenses file uploaded" if expense_df is not None and not expense_df.empty
+            else "Master Expenses NOT uploaded — every Voucher No./Date will be blank"
+        ),
     }
 
     return {
         "combined": combined,
         "pivot": pivot,
         "issues": pd.DataFrame(issues),
+        "voucher_unmatched": voucher_unmatched_df,
         "summary": summary,
     }

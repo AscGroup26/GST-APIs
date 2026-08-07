@@ -118,6 +118,25 @@ def show_itc_dashboard(user: dict):
                 c3.metric("Validation Issues", f"{itc.get('mrr_validation_issues', 0):,}")
                 c4.metric("Total IGST", _format_inr(itc.get("mrr_total_igst", 0)))
 
+                s1_summary = results["steps"]["step1"]["summary"]
+                matched = s1_summary.get("voucher_matched_rows", 0)
+                unmatched = s1_summary.get("voucher_unmatched_rows", 0)
+                pct = s1_summary.get("voucher_match_pct", 0)
+                st.caption(
+                    f"**Voucher No./Date match:** {matched:,} of {matched + unmatched:,} "
+                    f"pivot rows ({pct}%) matched a Master Expenses voucher by GSTIN + "
+                    f"invoice no. — {s1_summary.get('voucher_lookup_source', '')}. "
+                    "Unmatched rows are listed under **Step Details → Step 1**."
+                )
+                if unmatched and matched == 0:
+                    st.warning(
+                        "0% match rate — every MRR row is missing its Voucher No./Date. "
+                        "This usually means the Master Expenses file wasn't uploaded for "
+                        "this run, or its 'Bill No.' / 'Voucher Ref.' values use a "
+                        "different reference to the MRR 'sup_inv' supplier invoice number. "
+                        "See the sample under Step Details → Step 1."
+                    )
+
             if "step2" in results["steps"]:
                 st.markdown("**Step 2 — Expenses**")
                 s2 = results["steps"]["step2"]["summary"]
@@ -203,6 +222,21 @@ def show_itc_dashboard(user: dict):
                     df = step_data.get(data_key)
                     if df is not None and not df.empty:
                         st.dataframe(df.head(50), use_container_width=True)
+
+                    if key == "step1":
+                        vu_df = step_data.get("voucher_unmatched")
+                        if vu_df is not None and not vu_df.empty:
+                            st.subheader(
+                                f"Step 1 — MRR rows with no Voucher No./Date match "
+                                f"({len(vu_df)} shown, capped at 200)"
+                            )
+                            st.caption(
+                                "These GSTIN + Invoice No. combinations found no matching "
+                                "row in Master Expenses (by Bill No. / Voucher Ref.). "
+                                "Check whether the entry is booked yet, and whether it uses "
+                                "the same invoice reference as the MRR file's 'sup_inv'."
+                            )
+                            st.dataframe(vu_df, use_container_width=True)
 
                     if key == "step3":
                         inel_df = step_data.get("ineligible")
