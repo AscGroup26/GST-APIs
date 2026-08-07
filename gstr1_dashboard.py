@@ -22,6 +22,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Default local data folder (same folder as this script)
 DEFAULT_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
+# Excel export temp files are written here instead of the OS default temp
+# folder. tempfile.NamedTemporaryFile() defaults to the system temp dir
+# (e.g. C:\Users\<user>\AppData\Local\Temp), which can run out of space
+# independently of the drive this project lives on — a full C: drive should
+# not be able to break Excel export when D: has room to spare.
+_XLSX_TMP_DIR = os.path.join(DEFAULT_FOLDER, ".xlsx_tmp")
+os.makedirs(_XLSX_TMP_DIR, exist_ok=True)
+
 # ─────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────
@@ -1515,8 +1523,16 @@ def build_doc_summary(sales_df, return_df=None, stock_df=None, cc_df=None, asset
                 "Source Remarks"     : source_remark or "",
             })
 
-            # Cancelled detail — only when gaps exist and series is manageable
-            if r["cancelled"] > 0 and r["total_rng"] <= 50000:
+            # Cancelled detail — only when gaps exist and series is manageable.
+            # 50,000 was too low: a single legitimate high-volume series (e.g.
+            # 67,053 invoices from VUYE201317 to VUYE268369) would exceed it and
+            # be silently skipped here, even though the arange+setdiff below is
+            # still fast at that size — the Document Series summary above always
+            # shows the correct Cancelled count regardless of this cap; only the
+            # per-invoice-number listing was being dropped. Raised to 2,000,000,
+            # which still guards against a genuinely corrupted/mis-parsed invoice
+            # prefix producing an astronomical range.
+            if r["cancelled"] > 0 and r["total_rng"] <= 2_000_000:
                 present_set = set(
                     std.loc[std["prefix"] == pfx, "num"].tolist()
                 )
@@ -2021,7 +2037,7 @@ def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_d
 # ─────────────────────────────────────────────────────────────────
 def write_excel(sheets_dict: dict, period: str) -> bytes:
     _nan_strs = {"nan","NaN","None","none","<NA>"}
-    _tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    _tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, dir=_XLSX_TMP_DIR)
     _tmp.close()
     try:
         # constant_memory=True: writes each cell directly to disk — no shared string
@@ -2797,7 +2813,7 @@ if "gstr1_results" in st.session_state:
         if combined_df is not None and not combined_df.empty:
             _nan_s = ["nan","NaN","None","none","<NA>"]
             _fn = f"Combined_GSTR1_{period_label}.xlsx"
-            _tmp2 = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+            _tmp2 = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, dir=_XLSX_TMP_DIR)
             _tmp2.close()
             try:
                 with xlsxwriter.Workbook(_tmp2.name, {"strings_to_numbers": False}) as _wb:
