@@ -555,6 +555,10 @@ def split_s3_export_sheets(all_formatted):
     ineligible = all_formatted[all_formatted["Source"] == S3_INELIGIBLE_SOURCE].copy()
     if not ineligible.empty and "Rate" in ineligible.columns:
         ineligible = ineligible[ineligible["Rate"].apply(is_ineligible_debit)].copy()
+    if not ineligible.empty and "Voucher Type" in ineligible.columns:
+        ineligible = ineligible[
+            ineligible["Voucher Type"].astype(str).str.strip().str.upper() != "JV-ISD"
+        ].copy()
     return combined, ineligible
 
 
