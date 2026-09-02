@@ -488,6 +488,10 @@ _SALES_USECOLS = [
     "bill_state","bill_stcod",
     "hsncode","taxslab","inv_qty","inv_tot","totval",
     "igstamt","cgstamt","sgstamt","ugstamt","cessamt",
+    # Product detail (cols U-Y of the state sheet). Read only to fill the five
+    # trailing columns on the COMBINED sheet's Sales Return (Taken) rows — every
+    # other build_* names its columns explicitly, so these reach no other sheet.
+    "prodcode","proddesc","dist_rate",
 ]
 
 # dtype hints — avoids slow type inference, reduces object column count
@@ -497,6 +501,10 @@ _SALES_DTYPE = {
     "igstamt"   : "float32", "cgstamt"  : "float32",
     "sgstamt"   : "float32", "ugstamt"  : "float32", "cessamt"   : "float32",
     "taxslab"   : "float32", "inv_qty"  : "float32",
+    # ~460 distinct product codes across ~1.9M rows, so category holds the two
+    # text columns in ~18 MB instead of ~266 MB as object
+    "prodcode"  : "category", "proddesc" : "category",
+    "dist_rate" : "float32",
 }
 
 # GST State Code → State Name (for GSTIN-based POS derivation in B2B)
@@ -1007,6 +1015,69 @@ def build_cdnur(return_df):
     return grp
 
 # ─────────────────────────────────────────────────────────────────
+# PRODUCT DETAIL — five trailing columns copied verbatim from the
+# state-wise sale sheet: U prodcode, V proddesc, W hsncode,
+# X dist_rate, Y inv_qty.
+# ─────────────────────────────────────────────────────────────────
+PROD_COLS   = ["prodcode","proddesc","hsncode","dist_rate","inv_qty"]
+_PROD_TMP   = {c: f"_pd_{c}" for c in PROD_COLS}   # staging names, so joining a
+_PROD_FINAL = {v: k for k, v in _PROD_TMP.items()} # groupby key (hsncode) survives
+
+def _fmt_prod(v):
+    """One source cell as text, without the .0 pandas puts on whole numbers."""
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        if pd.isna(v):
+            return ""
+        if v.is_integer():
+            return str(int(v))
+        return repr(round(v, 4)).rstrip("0").rstrip(".")
+    s = str(v).strip()
+    return "" if s.lower() in {"nan","none","<na>","nat"} else s
+
+def build_product_detail(src_df, keys):
+    """
+    Collapse the product lines sitting behind each output row into 5 text columns.
+
+    One output row routinely covers many product lines — 70% of COMBINED rows and
+    44% of Stock Transfer rows do, up to 26 products in a single row — so each
+    cell lists that row's lines in source order joined with ' | '. The five stay
+    positionally aligned: the 2nd prodcode, 2nd proddesc and 2nd inv_qty all
+    belong to the same source line. Values are copied as they are — nothing is
+    summed, rounded, sorted or de-duplicated.
+
+    Returns a frame of `keys` + the _pd_* staging columns (empty if unavailable).
+    """
+    keys = [k for k in keys if k in src_df.columns]
+    have = [c for c in PROD_COLS if c in src_df.columns]
+    if not keys or not have or src_df.empty:
+        return pd.DataFrame()
+    # Staged under _pd_* names rather than renamed in place: hsncode is both a
+    # product column and a Stock Transfer group key, so the key must survive.
+    tmp = src_df[keys].copy()
+    for c in have:
+        tmp[_PROD_TMP[c]] = src_df[c].astype(object).map(_fmt_prod)
+    return tmp.groupby(keys, as_index=False, sort=False, observed=True).agg(
+        {_PROD_TMP[c]: " | ".join for c in have}
+    )
+
+def _recat_product_cols(df):
+    """
+    Restore category dtype on the two product text columns after a concat.
+
+    Each CSV is read with prodcode/proddesc as category, but concat unions the
+    category sets and falls back to object. Re-casting drops them from ~266 MB
+    back to ~18 MB across the ~1.9M-row sales frame.
+    """
+    for c in ("prodcode", "proddesc"):
+        if c in df.columns and str(df[c].dtype) == "object":
+            try:
+                df[c] = df[c].astype("category")
+            except Exception:
+                pass
+
+# ─────────────────────────────────────────────────────────────────
 # STOCK TRANSFER – Table 6A
 # ─────────────────────────────────────────────────────────────────
 def build_stock_transfer(stock_df):
@@ -1017,16 +1088,21 @@ def build_stock_transfer(stock_df):
     for _c in ["inv_qty","inv_tot","igstamt","cgstamt","sgstamt","ugstamt","cessamt","totval"]:
         if _c not in df.columns:
             df[_c] = 0
-    grp = df.groupby(
-        [c for c in ["gstin","mscname","inv_no","inv_date","fstate","fstcode","gstin2","ship_state","ship_stcod","hsncode","taxslab"] if c in df.columns],
-        as_index=False
-    ).agg(
+    _gkeys = [c for c in ["gstin","mscname","inv_no","inv_date","fstate","fstcode",
+                          "gstin2","ship_state","ship_stcod","hsncode","taxslab"]
+              if c in df.columns]
+    grp = df.groupby(_gkeys, as_index=False).agg(
         Total_Qty=("inv_qty","sum"),
         Taxable_Value=("inv_tot","sum"),
         IGST=("igstamt","sum"), CGST=("cgstamt","sum"),
         SGST=("sgstamt","sum"), UGST=("ugstamt","sum"), Cess=("cessamt","sum"),
         Total_Invoice_Value=("totval","first"),
     )
+    # Product detail straight off the same rows — merged on the group keys, so the
+    # existing rows and figures above are untouched; this only appends columns.
+    _prod = build_product_detail(df, _gkeys)
+    if not _prod.empty:
+        grp = grp.merge(_prod, on=_gkeys, how="left")
     grp["Invoice_Value"] = grp["Taxable_Value"]+grp["IGST"]+grp["CGST"]+grp["SGST"]+grp["UGST"]+grp["Cess"]
     grp.rename(columns={
         "gstin":"Consignor GSTIN","mscname":"From Warehouse",
@@ -1038,6 +1114,11 @@ def build_stock_transfer(stock_df):
     }, inplace=True)
     grp["retufm_no"]          = ""
     grp["Return_Bill_Number"] = ""
+    # Rename the staged product columns and push them to the far right
+    grp.rename(columns=_PROD_FINAL, inplace=True)
+    _tail = [c for c in PROD_COLS if c in grp.columns]
+    if _tail:
+        grp = grp[[c for c in grp.columns if c not in _tail] + _tail]
     return grp
 
 # ─────────────────────────────────────────────────────────────────
@@ -1811,7 +1892,7 @@ def build_tax_summary(sales_df, return_df=None, stock_df=None):
 # COMBINED GSTR-1 MASTER SHEET
 # Creates a single flat table with all transactions tagged by section
 # ─────────────────────────────────────────────────────────────────
-def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_df=None, cgst_returns=None):  # noqa: cc_df/assets_df kept for API compatibility
+def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_df=None, cgst_returns=None, prod_lookup=None):  # noqa: cc_df/assets_df kept for API compatibility
     """Invoice-level combined sheet using single groupby agg — fast & clean."""
     parts = []
 
@@ -2000,6 +2081,17 @@ def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_d
             agg_ret["GSTR1_Section"] = "Sales Return (Taken)"
             agg_ret["Source"]        = "Sales Return"
             agg_ret["Note_Type"]     = "CGST Return"
+
+            # Product detail for these rows only. The return sheet itself carries no
+            # product columns, but its retufm_no IS the original sale invoice number
+            # (99.5% of May-26 returns match), so the five columns come off the
+            # state-wise sale sheet for that invoice. Left join — figures untouched.
+            if (prod_lookup is not None and not prod_lookup.empty
+                    and "retufm_no" in agg_ret.columns
+                    and "retufm_no" in prod_lookup.columns):
+                agg_ret["retufm_no"] = agg_ret["retufm_no"].astype(str).str.strip()
+                agg_ret = agg_ret.merge(prod_lookup, on="retufm_no", how="left")
+
             parts.append(agg_ret)
 
     if not parts:
@@ -2030,6 +2122,16 @@ def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_d
                  "Invoice_No","retufm_no","Return_Bill_Number","Invoice_Date","Place_of_Supply","POS_Code",
                  "Taxable_Value","IGST","CGST","SGST","UGST","Cess",
                  "Invoice_Value","Total Value","Tax Slab","Note_Type"]
+
+    # Product detail — five columns at the far right, filled on the Sales Return
+    # (Taken) rows only; blank on every other row, which has no single product.
+    combined.rename(columns=_PROD_FINAL, inplace=True)
+    for _pc in PROD_COLS:
+        if _pc in combined.columns:
+            combined[_pc] = (combined[_pc].fillna("").astype(str)
+                             .replace({"nan": "", "None": "", "<NA>": ""}))
+    col_order += [c for c in PROD_COLS if c in combined.columns]
+
     return combined[[c for c in col_order if c in combined.columns]]
 
 # ─────────────────────────────────────────────────────────────────
@@ -2167,6 +2269,7 @@ if process_btn:
             sales_df = pd.concat(frames, ignore_index=True)
             del frames          # free individual CSV frames immediately
             import gc; gc.collect()
+            _recat_product_cols(sales_df)
             sales_df = classify_sales(sales_df)
     elif state_files:
         frames = []
@@ -2175,11 +2278,14 @@ if process_btn:
             except Exception as e: st.warning(f"Skipped {f.name}: {e}")
         if frames:
             sales_df = pd.concat(frames, ignore_index=True)
+            _recat_product_cols(sales_df)
             sales_df = classify_sales(sales_df)
     update_progress(20, f"✅ 20% — Loaded {len(sales_df):,} sales rows")
 
     # ── Load stock transfer ───────────────────────────────────────
-    _ST_COLS = {"gstin","mscname","gstin2","inv_no","inv_date","fstate","fstcode",
+    # NOTE: "prodcode","proddesc","dist_rate" added for the 5 trailing columns
+    _ST_COLS = {"prodcode","proddesc","dist_rate",
+                "gstin","mscname","gstin2","inv_no","inv_date","fstate","fstcode",
                 "ship_state","ship_stcod","hsncode","taxslab","inv_qty","inv_tot",
                 "totval","igstamt","cgstamt","sgstamt","ugstamt","cessamt","freight"}
     stock_df = pd.DataFrame()
@@ -2278,8 +2384,33 @@ if process_btn:
                              stock_df=stock_df if not stock_df.empty else None,
                              cgst_returns=_cgst,
                              assets_df=assets_df if not assets_df.empty else None)
+    # Product detail for the COMBINED sheet's Sales Return (Taken) rows, keyed on
+    # retufm_no -> sale inv_no. Built only for the invoices that were actually
+    # returned (~42k of ~365k), so this stays a small, quick lookup.
+    _prod_lookup = pd.DataFrame()
     try:
-        combined_df = build_combined(sales_df, _ret, _stk, cc_df, assets_df, cgst_returns=_cgst)
+        if (_cgst is not None and not _cgst.empty and "retufm_no" in _cgst.columns
+                and sales_df is not None and not sales_df.empty
+                and "inv_no" in sales_df.columns):
+            _want = set(_cgst["retufm_no"].dropna().astype(str).str.strip()) - {""}
+            if _want:
+                _sub = sales_df[sales_df["inv_no"].astype(str).str.strip().isin(_want)]
+                _prod_lookup = build_product_detail(_sub, ["inv_no"]).rename(
+                    columns={"inv_no": "retufm_no"})
+                del _sub
+                if not _prod_lookup.empty:
+                    # Strip to match the merge key, then guarantee one row per
+                    # invoice so the left join can never duplicate a return row.
+                    _prod_lookup["retufm_no"] = (_prod_lookup["retufm_no"]
+                                                 .astype(str).str.strip())
+                    _prod_lookup = _prod_lookup.drop_duplicates(
+                        subset=["retufm_no"], keep="first")
+    except Exception as _pe:
+        st.warning(f"⚠️ Product detail lookup skipped: {_pe}")
+
+    try:
+        combined_df = build_combined(sales_df, _ret, _stk, cc_df, assets_df,
+                                     cgst_returns=_cgst, prod_lookup=_prod_lookup)
     except Exception as _ce:
         st.warning(f"⚠️ Combined GSTR-1 build error: {_ce}")
         combined_df = pd.DataFrame()

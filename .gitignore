@@ -5,6 +5,9 @@
 *.xlsb
 *.xlsm
 
+# Temporary Excel export files
+.xlsx_tmp/
+
 # Python virtual environment
 .venv/
 
