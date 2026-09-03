@@ -44,6 +44,30 @@ jobs:
           ssh -i ~/.ssh/deploy_key "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" 'bash -s' <<'DEPLOY'
           set -e
           cd /var/www/asc-gstms
+
+          # ── Reclaim disk before anything that needs it ──────────────────
+          # A failed Excel export leaves gigabytes of xlsxwriter scratch behind
+          # (the COMBINED sheet alone peaks at ~2 GB of uncompressed XML). Once
+          # the volume fills, git pull and pip install fail with errors that say
+          # nothing about the real cause, so clear our own scratch first and
+          # report the disk either way.
+          echo "=== disk before ==="
+          df -h / | tail -1
+          find .xlsx_tmp -type f -mmin +60 -delete 2>/dev/null || true
+          echo "=== disk after clearing .xlsx_tmp ==="
+          df -h / | tail -1
+
+          AVAIL_MB=$(df -Pm / | awk 'NR==2 {print $4}')
+          if [ "$AVAIL_MB" -lt 3072 ]; then
+            echo "ERROR: only ${AVAIL_MB} MB free on /."
+            echo "The GSTR-1 Excel export needs ~2.5 GB of scratch space to run."
+            echo "Largest directories:"
+            du -xh --max-depth=1 / 2>/dev/null | sort -rh | head -10
+            echo "Also check /tmp:"
+            du -sh /tmp 2>/dev/null || true
+            exit 1
+          fi
+
           git pull --ff-only
           venv/bin/pip install -r requirements.txt --quiet
           sudo systemctl restart asc-gstms
@@ -51,6 +75,7 @@ jobs:
             sleep 2
             if curl -sf -o /dev/null http://127.0.0.1:8502; then
               echo "App is up and responding."
+              df -h / | tail -1
               exit 0
             fi
           done
