@@ -47,24 +47,48 @@ jobs:
 
           # ── Reclaim disk before anything that needs it ──────────────────
           # A failed Excel export leaves gigabytes of xlsxwriter scratch behind
-          # (the COMBINED sheet alone peaks at ~2 GB of uncompressed XML). Once
-          # the volume fills, git pull and pip install fail with errors that say
-          # nothing about the real cause, so clear our own scratch first and
-          # report the disk either way.
+          # (the COMBINED sheet alone peaks at ~2 GB of uncompressed XML). Before
+          # the tmpdir fix that scratch went to /tmp, so the leftovers are in
+          # BOTH places. Once the volume fills, git pull and pip install fail
+          # with errors that say nothing about the real cause. Nobody here has
+          # shell access to the VM, so this step is the only way to clear it.
           echo "=== disk before ==="
           df -h / | tail -1
+
+          # 1. Our own scratch dir - safe to clear wholesale.
           find .xlsx_tmp -type f -mmin +60 -delete 2>/dev/null || true
-          echo "=== disk after clearing .xlsx_tmp ==="
+
+          # 2. Scratch this app leaked into /tmp before the tmpdir fix.
+          #    Deliberately narrow: tempfile-prefixed, LARGER THAN 10 MB, and
+          #    untouched for an hour. Worksheet scratch runs to hundreds of MB,
+          #    so that size floor keeps every ordinary /tmp file out of scope,
+          #    and the age floor protects an export running right now.
+          #    sudo -n so it never blocks on a password prompt; falls back to
+          #    whatever the deploy user can remove on its own.
+          echo "--- stale scratch in /tmp (candidates) ---"
+          sudo -n find /tmp -maxdepth 1 -type f -name 'tmp*' -size +10M -mmin +60 \
+               -printf '%10s  %p\n' 2>/dev/null \
+            || find /tmp -maxdepth 1 -type f -name 'tmp*' -size +10M -mmin +60 \
+               -printf '%10s  %p\n' 2>/dev/null \
+            || echo "(none readable)"
+          sudo -n find /tmp -maxdepth 1 -type f -name 'tmp*' -size +10M -mmin +60 -delete 2>/dev/null \
+            || find /tmp -maxdepth 1 -type f -name 'tmp*' -size +10M -mmin +60 -delete 2>/dev/null \
+            || true
+
+          echo "=== disk after cleanup ==="
           df -h / | tail -1
 
           AVAIL_MB=$(df -Pm / | awk 'NR==2 {print $4}')
           if [ "$AVAIL_MB" -lt 3072 ]; then
-            echo "ERROR: only ${AVAIL_MB} MB free on /."
+            echo "ERROR: only ${AVAIL_MB} MB free on / after cleanup."
             echo "The GSTR-1 Excel export needs ~2.5 GB of scratch space to run."
-            echo "Largest directories:"
-            du -xh --max-depth=1 / 2>/dev/null | sort -rh | head -10
-            echo "Also check /tmp:"
-            du -sh /tmp 2>/dev/null || true
+            echo "Cleanup could not free enough, so something else is using the disk."
+            echo "--- largest directories on / ---"
+            sudo -n du -xh --max-depth=2 / 2>/dev/null | sort -rh | head -20 \
+              || du -xh --max-depth=1 / 2>/dev/null | sort -rh | head -20
+            echo "--- notable paths ---"
+            du -sh /tmp /var/log /var/www/asc-gstms/.xlsx_tmp 2>/dev/null || true
+            echo "Send this output to whoever administers the VM."
             exit 1
           fi
 
