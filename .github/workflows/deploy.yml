@@ -75,21 +75,49 @@ jobs:
             || find /tmp -maxdepth 1 -type f -name 'tmp*' -size +10M -mmin +60 -delete 2>/dev/null \
             || true
 
+          # 3. Standard, non-destructive reclamation. Rotated journals and cached
+          #    .deb files are regenerable by definition - neither holds state any
+          #    application depends on. Nothing else is touched automatically:
+          #    this VM is shared with other services and the bulk of the disk sits
+          #    in /var/lib, which can hold live databases. That is a human's call.
+          echo "--- reclaiming journal + apt cache ---"
+          sudo -n journalctl --vacuum-size=200M 2>/dev/null | tail -2 || echo "(journal vacuum unavailable)"
+          sudo -n apt-get clean 2>/dev/null && echo "apt cache cleared" || echo "(apt clean unavailable)"
+
           echo "=== disk after cleanup ==="
           df -h / | tail -1
 
           AVAIL_MB=$(df -Pm / | awk 'NR==2 {print $4}')
-          if [ "$AVAIL_MB" -lt 3072 ]; then
-            echo "ERROR: only ${AVAIL_MB} MB free on / after cleanup."
-            echo "The GSTR-1 Excel export needs ~2.5 GB of scratch space to run."
-            echo "Cleanup could not free enough, so something else is using the disk."
-            echo "--- largest directories on / ---"
-            sudo -n du -xh --max-depth=2 / 2>/dev/null | sort -rh | head -20 \
-              || du -xh --max-depth=1 / 2>/dev/null | sort -rh | head -20
-            echo "--- notable paths ---"
-            du -sh /tmp /var/log /var/www/asc-gstms/.xlsx_tmp 2>/dev/null || true
+
+          # Deploying and exporting need very different amounts of room, so gate
+          # them separately. git pull + pip need a few hundred MB; blocking the
+          # deploy on the export's 2.5 GB just keeps the fix off the server.
+          if [ "$AVAIL_MB" -lt 500 ]; then
+            echo "ERROR: only ${AVAIL_MB} MB free on / - not enough to even pull and install."
+            echo ""
+            echo "This is NOT the GSTR-1 app: /tmp and .xlsx_tmp are both empty."
+            echo "Something else on this shared VM is holding the disk."
+            echo "--- where the space is ---"
+            sudo -n du -xh --max-depth=2 / 2>/dev/null | sort -rh | head -25 \
+              || du -xh --max-depth=1 / 2>/dev/null | sort -rh | head -25
+            echo "--- /var/lib breakdown (the big one) ---"
+            sudo -n du -xh --max-depth=2 /var/lib 2>/dev/null | sort -rh | head -20 \
+              || echo "(needs sudo to read)"
+            echo "--- usual suspects ---"
+            sudo -n du -sh /var/lib/docker /var/lib/snapd /var/lib/mysql \
+                 /var/lib/postgresql /var/lib/containerd 2>/dev/null || true
+            sudo -n journalctl --disk-usage 2>/dev/null || true
+            command -v docker >/dev/null && sudo -n docker system df 2>/dev/null || true
+            echo ""
             echo "Send this output to whoever administers the VM."
             exit 1
+          fi
+
+          if [ "$AVAIL_MB" -lt 3072 ]; then
+            echo "WARNING: only ${AVAIL_MB} MB free. Deploying anyway, but the Excel"
+            echo "export needs ~2.5 GB of scratch and the app will refuse it with a"
+            echo "clear message until the disk is freed. Space is going to /var/lib,"
+            echo "not to this app."
           fi
 
           git pull --ff-only
