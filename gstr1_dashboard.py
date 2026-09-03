@@ -15,7 +15,9 @@ import numpy as np
 import io
 import os
 import glob
+import shutil
 import tempfile
+import time
 import xlsxwriter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -24,11 +26,64 @@ DEFAULT_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
 # Excel export temp files are written here instead of the OS default temp
 # folder. tempfile.NamedTemporaryFile() defaults to the system temp dir
-# (e.g. C:\Users\<user>\AppData\Local\Temp), which can run out of space
-# independently of the drive this project lives on — a full C: drive should
-# not be able to break Excel export when D: has room to spare.
-_XLSX_TMP_DIR = os.path.join(DEFAULT_FOLDER, ".xlsx_tmp")
+# (e.g. C:\Users\<user>\AppData\Local\Temp, or /tmp on the server), which can
+# run out of space independently of the drive this project lives on — a full
+# C: drive should not be able to break Excel export when D: has room to spare.
+#
+# Override with GSTR1_TMPDIR when the app volume is small. On the deployment
+# that is the whole fix for [Errno 28]: point it at a volume with several GB
+# free, e.g.  GSTR1_TMPDIR=/var/data/xlsx_tmp
+_XLSX_TMP_DIR = os.environ.get("GSTR1_TMPDIR", "").strip() or os.path.join(
+    DEFAULT_FOLDER, ".xlsx_tmp")
 os.makedirs(_XLSX_TMP_DIR, exist_ok=True)
+
+# Scratch bytes per cell, for the pre-flight space check. Measured on the real
+# May-26 workbook: the COMBINED sheet's 19.2M cells peaked at 2.01 GB of
+# uncompressed worksheet XML for a 76 MB finished file — 26x the output, or
+# ~105 bytes per cell. 110 leaves a little headroom.
+_XLSX_TMP_BYTES_PER_CELL = 110
+
+
+def _free_bytes(path):
+    """Free space on the volume holding `path` (0 if it cannot be determined)."""
+    try:
+        return shutil.disk_usage(path).free
+    except Exception:
+        return 0
+
+
+def _purge_xlsx_tmp(older_than_seconds=3600):
+    """
+    Delete scratch files left behind by a previous run.
+
+    A run that dies part way through Excel export (out of disk, killed worker,
+    browser closed) leaves its worksheet scratch files behind — and for this
+    workbook those are gigabytes each. Left alone they accumulate until the
+    volume fills, which is exactly how [Errno 28] starts. Anything older than
+    an hour is stale; that window is wide enough not to disturb a second
+    session exporting concurrently.
+    """
+    cutoff = time.time() - older_than_seconds
+    freed = 0
+    try:
+        for name in os.listdir(_XLSX_TMP_DIR):
+            p = os.path.join(_XLSX_TMP_DIR, name)
+            try:
+                if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
+                    freed += os.path.getsize(p)
+                    os.unlink(p)
+                elif os.path.isdir(p) and os.path.getmtime(p) < cutoff:
+                    freed += sum(os.path.getsize(os.path.join(r, f))
+                                 for r, _d, fs in os.walk(p) for f in fs)
+                    shutil.rmtree(p, ignore_errors=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return freed
+
+
+_purge_xlsx_tmp()
 
 # ─────────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -2139,15 +2194,44 @@ def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_d
 # ─────────────────────────────────────────────────────────────────
 def write_excel(sheets_dict: dict, period: str) -> bytes:
     _nan_strs = {"nan","NaN","None","none","<NA>"}
+
+    # ── Scratch space check ──────────────────────────────────────────
+    # constant_memory streams each worksheet to its own scratch file and only
+    # zips them into the .xlsx at close(). Those scratch files hold UNCOMPRESSED
+    # XML, so they dwarf the finished workbook — COMBINED alone is ~19M cells.
+    # Without room for them close() dies with [Errno 28] after several minutes
+    # of work, so check up front and say something useful instead.
+    _cells = sum((len(d.columns) + 1) * len(d)
+                 for d in sheets_dict.values()
+                 if isinstance(d, pd.DataFrame) and not d.empty)
+    _need = int(_cells * _XLSX_TMP_BYTES_PER_CELL * 1.15)
+    _free = _free_bytes(_XLSX_TMP_DIR)
+    if _free and _need and _free < _need:
+        _purge_xlsx_tmp(older_than_seconds=0)     # reclaim this run's own leftovers
+        _free = _free_bytes(_XLSX_TMP_DIR)
+    if _free and _need and _free < _need:
+        raise RuntimeError(
+            f"Not enough disk space to build the Excel file.\n\n"
+            f"• Needs about {_need / 1e9:.1f} GB of scratch space "
+            f"({_cells / 1e6:.1f}M cells across {len(sheets_dict)} sheets)\n"
+            f"• Only {_free / 1e9:.2f} GB free on {_XLSX_TMP_DIR}\n\n"
+            f"Free space on that volume, or point the app at a bigger one by "
+            f"setting the GSTR1_TMPDIR environment variable and restarting."
+        )
+
     _tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, dir=_XLSX_TMP_DIR)
     _tmp.close()
     try:
         # constant_memory=True: writes each cell directly to disk — no shared string
         # table buffered in RAM, so large sheets with many unique strings won't OOM.
+        # tmpdir: without it those scratch files go to the SYSTEM temp dir (/tmp on
+        # the server) regardless of where _tmp lives, which is what filled the
+        # deployment's root volume. Keep them beside the output, on one known volume.
         with xlsxwriter.Workbook(_tmp.name, {
             "nan_inf_to_errors"  : True,
             "strings_to_numbers" : False,
             "constant_memory"    : True,
+            "tmpdir"             : _XLSX_TMP_DIR,
         }) as wb:
             hdr   = wb.add_format({"bold":True,"bg_color":"#1e3a5f","font_color":"white","border":1,"align":"center","valign":"vcenter","text_wrap":True})
             num_f = wb.add_format({"num_format":"#,##0.00","border":1})
@@ -2205,6 +2289,19 @@ def write_excel(sheets_dict: dict, period: str) -> bytes:
 
         with open(_tmp.name, "rb") as _f:
             return _f.read()
+    except Exception as exc:
+        # A failed close() leaves gigabytes of worksheet scratch behind. Clearing
+        # it here stops one failure from making the next run fail sooner.
+        _purge_xlsx_tmp(older_than_seconds=0)
+        if "Errno 28" in str(exc) or "No space left" in str(exc):
+            raise RuntimeError(
+                f"Ran out of disk space while writing the Excel file "
+                f"({_cells / 1e6:.1f}M cells needs roughly "
+                f"{_need / 1e9:.1f} GB of scratch).\n\n"
+                f"Free space on {_XLSX_TMP_DIR}, or set GSTR1_TMPDIR to a volume "
+                f"with more room and restart."
+            ) from exc
+        raise
     finally:
         try:
             os.unlink(_tmp.name)
@@ -2450,7 +2547,14 @@ if process_btn:
         "Cancelled Invoices"   : cancelled_df,
         "Tax Summary"          : tax_df,
     }
-    _excel_bytes = write_excel(_sheets, period_label)
+    try:
+        _excel_bytes = write_excel(_sheets, period_label)
+    except Exception as _xe:
+        # Everything above this point succeeded, so keep the computed sections and
+        # let the user see them; only the workbook is missing. Re-raising here
+        # would throw away several minutes of work over a full disk.
+        st.error(f"⚠️ Could not build the Excel workbook.\n\n{_xe}")
+        _excel_bytes = None
     _fname = f"GSTR1_Modicare_{period_label.replace(' ','_').replace('-','')}.xlsx"
 
     # ── Save all results + pre-built Excel to session state ──
@@ -2994,10 +3098,16 @@ if "gstr1_results" in st.session_state:
             ):
                 log_download(get_current_user().get("username", ""), excel_fname)
         else:
-            st.warning("Re-process data to enable download.")
+            st.warning("Excel workbook not available — see the error above, then re-process.")
     with dc2:
         cancelled_count = len(cancelled_df) if cancelled_df is not None and not cancelled_df.empty else 0
-        st.success(f"✅ **{excel_fname}** ready — {n_sheets} sheets including **COMBINED GSTR-1** + **Cancelled Invoices** ({cancelled_count:,} gaps).")
+        if excel_bytes:
+            st.success(f"✅ **{excel_fname}** ready — {n_sheets} sheets including **COMBINED GSTR-1** + **Cancelled Invoices** ({cancelled_count:,} gaps).")
+        else:
+            # Don't claim a file is ready when the workbook failed to build; the
+            # sections below are still valid and can be read on screen.
+            st.info("The sections below were computed successfully — only the "
+                    "Excel workbook could not be written.")
 
 st.markdown("---")
 # st.caption("ASC Consulting Pvt. Ltd. | Modicare GSTR-1 Dashboard v2.0 | Internal use only")
