@@ -40,8 +40,15 @@ os.makedirs(_XLSX_TMP_DIR, exist_ok=True)
 # Scratch bytes per cell, for the pre-flight space check. Measured on the real
 # May-26 workbook: the COMBINED sheet's 19.2M cells peaked at 2.01 GB of
 # uncompressed worksheet XML for a 76 MB finished file — 26x the output, or
-# ~105 bytes per cell. 110 leaves a little headroom.
-_XLSX_TMP_BYTES_PER_CELL = 110
+# 104.7 bytes per cell. Use the measured figure, not a padded one: over-stating
+# it refuses exports that would have completed, and a failed write is now
+# recoverable (scratch is purged and the sections still render).
+_XLSX_TMP_BYTES_PER_CELL = 105
+
+# Below this fraction of the estimate the write cannot finish, so refuse up
+# front. Between it and 1.0 the estimate is close enough to be worth trying —
+# the measurement has some spread and being wrong costs minutes, not data.
+_XLSX_TMP_HARD_FLOOR = 0.80
 
 
 def _free_bytes(path):
@@ -2204,12 +2211,12 @@ def write_excel(sheets_dict: dict, period: str) -> bytes:
     _cells = sum((len(d.columns) + 1) * len(d)
                  for d in sheets_dict.values()
                  if isinstance(d, pd.DataFrame) and not d.empty)
-    _need = int(_cells * _XLSX_TMP_BYTES_PER_CELL * 1.15)
+    _need = int(_cells * _XLSX_TMP_BYTES_PER_CELL)
     _free = _free_bytes(_XLSX_TMP_DIR)
     if _free and _need and _free < _need:
         _purge_xlsx_tmp(older_than_seconds=0)     # reclaim this run's own leftovers
         _free = _free_bytes(_XLSX_TMP_DIR)
-    if _free and _need and _free < _need:
+    if _free and _need and _free < _need * _XLSX_TMP_HARD_FLOOR:
         raise RuntimeError(
             f"Not enough disk space to build the Excel file.\n\n"
             f"• Needs about {_need / 1e9:.1f} GB of scratch space "
@@ -2217,6 +2224,12 @@ def write_excel(sheets_dict: dict, period: str) -> bytes:
             f"• Only {_free / 1e9:.2f} GB free on {_XLSX_TMP_DIR}\n\n"
             f"Free space on that volume, or point the app at a bigger one by "
             f"setting the GSTR1_TMPDIR environment variable and restarting."
+        )
+    if _free and _need and _free < _need:
+        st.info(
+            f"Disk is tight — about {_need / 1e9:.1f} GB of scratch needed, "
+            f"{_free / 1e9:.2f} GB free. Building anyway; if it runs out the "
+            f"scratch is cleared and your computed sections are kept."
         )
 
     _tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, dir=_XLSX_TMP_DIR)
@@ -2547,14 +2560,30 @@ if process_btn:
         "Cancelled Invoices"   : cancelled_df,
         "Tax Summary"          : tax_df,
     }
+    _n_sheets = len(_sheets)
     try:
         _excel_bytes = write_excel(_sheets, period_label)
     except Exception as _xe:
-        # Everything above this point succeeded, so keep the computed sections and
-        # let the user see them; only the workbook is missing. Re-raising here
-        # would throw away several minutes of work over a full disk.
-        st.error(f"⚠️ Could not build the Excel workbook.\n\n{_xe}")
-        _excel_bytes = None
+        # Too tight for the full workbook. COMBINED is ~98% of every cell in the
+        # file (19.2M of 20.9M) and already has its own dedicated download, so
+        # dropping just that sheet takes the scratch requirement from ~2.2 GB to
+        # under 200 MB. A workbook with twelve of thirteen sheets beats none.
+        _slim = {k: v for k, v in _sheets.items() if k != "COMBINED GSTR-1"}
+        try:
+            _excel_bytes = write_excel(_slim, period_label)
+            _n_sheets = len(_slim)
+            st.warning(
+                f"⚠️ Not enough disk space for the full workbook, so **COMBINED "
+                f"GSTR-1 was left out** of it — the other {len(_slim)} sheets are "
+                f"all there.\n\nDownload COMBINED separately from the "
+                f"**Combined GSTR-1** tab, which writes it on its own.\n\n{_xe}"
+            )
+        except Exception as _xe2:
+            # Everything above this point succeeded, so keep the computed sections
+            # and let the user see them; only the workbook is missing. Re-raising
+            # would throw away several minutes of work over a full disk.
+            st.error(f"⚠️ Could not build the Excel workbook.\n\n{_xe2}")
+            _excel_bytes = None
     _fname = f"GSTR1_Modicare_{period_label.replace(' ','_').replace('-','')}.xlsx"
 
     # ── Save all results + pre-built Excel to session state ──
@@ -2570,7 +2599,7 @@ if process_btn:
         "tax_df"       : tax_df,    "combined_df" : combined_df,
         "excel_bytes"  : _excel_bytes,
         "excel_fname"  : _fname,
-        "n_sheets"     : len(_sheets),
+        "n_sheets"     : _n_sheets,   # 12, not 13, if COMBINED had to be dropped
     }
     update_progress(100, "✅ 100% — All GSTR-1 sections generated!")
     pct_box.markdown(
