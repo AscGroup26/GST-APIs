@@ -284,18 +284,27 @@ def _skip_incomplete_s2_row(row):
 
 
 def _combined_s2_expense_rows(all_expenses, data_month, mrr_cons=None):
-    """S2 rows for Combined — Master sheet Asc Remarks = Expense (incl. Expesne typo)."""
+    """
+    S2 rows for Combined — Master sheet Asc Remarks = Expense (incl. Expesne typo).
+
+    Every Expense row is carried through. Rows whose CON also appears in the MRR
+    pivot used to be skipped as duplicates, but a CON is only (GSTIN + Bill No),
+    so a bill posted against two supplier GSTINs — a correction moving it from
+    one to the other, booked as an offsetting +/- pair — had just the leg that
+    collided with MRR removed. That left the opposite leg standing alone and
+    overstated ITC by its full value (HR/26-27/0150, Aug-26: +175,892 kept,
+    -175,892 dropped). Keeping both lets the pair cancel as the books intend.
+
+    `mrr_cons` is accepted for call-site compatibility and intentionally unused.
+    """
     if all_expenses is None or all_expenses.empty:
         return []
-    mrr_cons = mrr_cons or set()
     rows = []
     for _, row in all_expenses.iterrows():
         if _skip_incomplete_s2_row(row):
             continue
         asc = _asc_remark_value(row)
         if not _is_asc_expense(asc):
-            continue
-        if row["con"] in mrr_cons:
             continue
         rows.append(_row_from_s2_combined(row, data_month, source="Expense"))
     return rows
@@ -642,8 +651,14 @@ def build_books_from_sources(
         _combined_s2_ineligible_rows(all_expenses, data_month),
         group_keys=None,
     )
+    # One S3 row per S1_MRR_Pivot row — group_keys=None, matching every other
+    # combined part below. Grouping on CON+Category merged a bill's tax-slab
+    # rows together (the pivot already splits by Tax Slab), so a bill carrying
+    # two slabs arrived in S3 as a single line with only the first slab's label.
+    # Totals were right, the slab-level detail was not, and S3 no longer tallied
+    # row-for-row with S1_MRR_Pivot.
     books_mrr = _aggregate_books(
-        _combined_mrr_rows(mrr_pivot, data_month), group_keys=["CON", "Category"]
+        _combined_mrr_rows(mrr_pivot, data_month), group_keys=None
     )
     books_s2_import = _aggregate_books(
         _combined_s2_import_rows(all_expenses, data_month), group_keys=None,

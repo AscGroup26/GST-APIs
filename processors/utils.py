@@ -209,8 +209,40 @@ def state_name_from_gstin(gstin):
     return state_name_from_code(gstin_state_code(gstin))
 
 
+# Two-letter entries in VOUCHER_STATE_ALIASES (BI, TR, UP, MA, MI, AP, HI, MP)
+# are shorthand for the body of a JV-* voucher type, e.g. "JV-UP". They must
+# never be matched against free text: "IDBI Bank -Payment" contains BI, "Bank
+# Transfer" contains TR, "Supplier Payment" contains UP, "Debit Note" contains
+# BI. Derived from the dict rather than hard-coded so the two stay in step.
+_VOUCHER_SHORT_ALIASES = frozenset(k for k in VOUCHER_STATE_ALIASES if len(k) <= 2)
+
+# Longest first, so "MADHYA PRADESH" wins over "MADHYA" and "UTTARAKHAND"
+# is never read as "UTTAR".
+_VOUCHER_ALIASES_BY_LENGTH = sorted(
+    VOUCHER_STATE_ALIASES.items(), key=lambda kv: len(kv[0]), reverse=True
+)
+
+
+def _match_voucher_alias(text, allow_short):
+    """Find a state alias in `text`, matching whole words only."""
+    for key, val in _VOUCHER_ALIASES_BY_LENGTH:
+        if not allow_short and key in _VOUCHER_SHORT_ALIASES:
+            continue
+        if re.search(rf"(?<![A-Z]){re.escape(key)}(?![A-Z])", text):
+            return val
+    return ""
+
+
 def state_name_from_voucher_type(voucher_type):
-    """Derive state name from JV-* voucher types and common aliases."""
+    """
+    Derive state name from JV-* voucher types and common aliases.
+
+    Matching is whole-word. The previous version tested `alias in text` for every
+    voucher type, so any string containing a two-letter code picked up that
+    state: "IDBI Bank -Payment" and "Debit Note" became Bihar, "Bank Transfer"
+    and "Contra" became Tripura, "Supplier Payment" became Uttar Pradesh. Only
+    a JV-* body may use the two-letter shorthand.
+    """
     if pd.isna(voucher_type):
         return ""
     vt = str(voucher_type).strip().upper()
@@ -225,14 +257,8 @@ def state_name_from_voucher_type(voucher_type):
         body = body.strip()
         if body in VOUCHER_STATE_ALIASES:
             return VOUCHER_STATE_ALIASES[body]
-        for key, val in VOUCHER_STATE_ALIASES.items():
-            if key in body:
-                return val
-        return ""
-    for key, val in VOUCHER_STATE_ALIASES.items():
-        if key in vt:
-            return val
-    return ""
+        return _match_voucher_alias(body, allow_short=True)
+    return _match_voucher_alias(vt, allow_short=False)
 
 
 def validate_gst_head(gstin, ship_state_code, igst, cgst, sgst, tolerance=1.0):
@@ -379,7 +405,14 @@ def infer_data_received_month(
 
     raw_dates = _collect_processing_dates(mrr_result, expense_result)
     if raw_dates:
-        parsed = pd.to_datetime(raw_dates, dayfirst=True, errors="coerce")
+        # Wrap in a Series first: pd.to_datetime() on a plain list returns a
+        # DatetimeIndex, which exposes .to_period() directly and has no .dt
+        # accessor, so this raised "'DatetimeIndex' object has no attribute 'dt'"
+        # and took the whole of Step 3 down with it. Only reached when the caller
+        # passes file paths rather than upload objects — a path has no .name, so
+        # the filename branch above cannot short-circuit — which is why it stayed
+        # hidden behind the dashboard's uploaders.
+        parsed = pd.to_datetime(pd.Series(list(raw_dates)), dayfirst=True, errors="coerce")
         valid = parsed.dropna()
         if len(valid):
             mode = valid.dt.to_period("M").mode()
