@@ -270,6 +270,48 @@ def classify_remark(remark):
 # ─────────────────────────────────────────────────────────────────
 # STEP 1 — OUTPUT TAX LIABILITY
 # ─────────────────────────────────────────────────────────────────
+def _norm_type(val):
+    """Lowercase, strip, collapse any run of non-alphanumerics to one space."""
+    return re.sub(r"[^a-z0-9]+", " ", str(val or "").lower()).strip()
+
+
+# Canonical TYPE spelling keyed by its normalised form.
+_CANON_TYPE_EXACT = {_norm_type(k): k for k in G.KNOWN_TYPES}
+
+
+def _canon_type(raw):
+    """
+    Map a raw Sale Summary TYPE cell onto a canonical KNOWN_TYPE, or None.
+
+    The Sale Summary is produced by more than one upstream tool, so the same
+    category arrives spelled several ways — "Assets" / "Asset Sale" for an asset
+    sale, "STOCK TRANSFER" with odd case or spacing for a stock transfer. Exact,
+    case-sensitive matching excluded those rows and left N/S (and the exempt
+    column U) reading zero. Normalise case/spacing first, then fall back to
+    keyword aliases; anything still unrecognised returns None and is reported
+    and excluded exactly as before.
+    """
+    n = _norm_type(raw)
+    if not n:
+        return None
+    if n in _CANON_TYPE_EXACT:
+        return _CANON_TYPE_EXACT[n]
+    # Keyword aliases. Order matters: "assets sale" and "sale return" both
+    # contain "sale", so the more specific categories are tested first.
+    # "trf"/"tfr" are the usual shorthand for transfer on these sheets.
+    if "stock" in n and any(w in n for w in ("transfer", "trf", "tfr")):
+        return G.TYPE_STOCK
+    if "asset" in n:
+        return G.TYPE_ASSET
+    if "cross" in n and "charge" in n:
+        return G.TYPE_CROSS
+    if "return" in n:
+        return G.TYPE_RETURN
+    if n in ("sale", "sales", "sale other", "sale others", "b2b", "b2c"):
+        return G.TYPE_SALE
+    return None
+
+
 def process_step1(sale_df):
     """Tag exempt/taxable, pivot state-wise, derive the net figures."""
     cols = resolve(sale_df, G.SALE_SPEC)
@@ -287,18 +329,22 @@ def process_step1(sale_df):
 
     grid = defaultdict(lambda: {c: 0.0 for c in G.STEP1_COLS})
     skipped_blank = 0
+    remapped = defaultdict(int)     # non-canonical TYPE spellings that matched
 
     for i in range(len(sale_df)):
         s = st.iat[i]
         if not s:
             skipped_blank += 1          # embedded total rows carry a blank state
             continue
-        t = typ.iat[i]
-        if t not in G.KNOWN_TYPES:
+        raw = typ.iat[i]
+        t = _canon_type(raw)
+        if t is None:
             exceptions.append(_ex("ERROR", "Unknown TYPE", s,
                                   "row %d: TYPE=%r not in %s — line EXCLUDED"
-                                  % (i + 2, t, sorted(G.KNOWN_TYPES))))
+                                  % (i + 2, raw, sorted(G.KNOWN_TYPES))))
             continue
+        if raw != t:
+            remapped[raw] += 1
 
         exempt = abs(slab.iat[i]) < 1e-9
         b = G.STEP1_BUCKETS[(t, exempt)]
@@ -319,6 +365,12 @@ def process_step1(sale_df):
                                   "CGST=%.2f SGST=%.2f"
                                   % (i + 2, t, igst.iat[i], cgst.iat[i], sgst.iat[i])))
         g["AG"] += cess.iat[i]
+
+    for raw, n in sorted(remapped.items()):
+        exceptions.append(_ex(
+            "INFO", "TYPE normalised", "—",
+            "TYPE %r (%d row(s)) read as %r. Standardise the source label to "
+            "avoid ambiguity." % (raw, n, _canon_type(raw))))
 
     # derived columns — verified against the live '3B Liability' sheet
     for s, g in grid.items():
@@ -613,11 +665,21 @@ def process_step2(step1_grid, books, stock_df, cross_df, isd_df,
     # d — stock received (IGST only)
     if stock_df is not None and len(stock_df):
         c = resolve(stock_df, G.STOCK_SPEC)
-        st = stock_df[c["state"] or stock_df.columns[0]].map(norm_gst_state)
-        vals = _col(stock_df, c.get("total"))
-        for i in range(len(stock_df)):
-            if st.iat[i]:
-                out[st.iat[i]]["d_stock"]["igst"] += vals.iat[i]
+        if not c.get("total"):
+            # This used to fall through to a column of zeros with no warning, so a
+            # total column the spec could not match looked exactly like a month
+            # with no stock received. Say so instead of reporting a silent zero.
+            exceptions.append(_ex(
+                "ERROR", "Stock received column not found", "",
+                "Stock Recd_Summary has no column starting 'Total Input' — found "
+                "%s. Stock received ITC is 0 for every state; check the sheet."
+                % ([str(x) for x in stock_df.columns][:8],)))
+        else:
+            st = stock_df[c["state"] or stock_df.columns[0]].map(norm_gst_state)
+            vals = _col(stock_df, c["total"])
+            for i in range(len(stock_df)):
+                if st.iat[i]:
+                    out[st.iat[i]]["d_stock"]["igst"] += vals.iat[i]
 
     # e — cross charge received (second 'Row Labels' block of the pivot)
     if cross_df is not None and len(cross_df):

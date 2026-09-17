@@ -110,7 +110,14 @@ ITC_SUMMARY_KEYS = ["State", "IGST", "CGST", "SGST", "Remarks"]
 CAT_IMPORT = "IMPORT"
 CAT_EXPENSE = "EXPENSE"
 
-STOCK_SPEC = {"state": ["Ship_State"], "total": ["Total Input in March"]}
+# The Stock Recd_Summary total column is named after the month it covers -
+# "Total Input in July", "Total Input in August", ... - so matching the full
+# label pinned Step 2 to a single month. It was written as "Total Input in
+# March", which meant stock received resolved to nothing and d_stock stayed at
+# zero for every other month (reported for Aug-26). Match the stable prefix and
+# let resolve()'s startswith handle the month; no other column on that sheet
+# begins with "Total Input".
+STOCK_SPEC = {"state": ["Ship_State"], "total": ["Total Input"]}
 STOCK_KEYS = ["Ship_State"]
 
 # The ISD sheet repeats the header 'IGST' for both the invoice split (D/E/F)
@@ -125,7 +132,11 @@ ISD_POS = {"state": 0, "igst": 14, "cgst": 15, "sgst": 16}
 #           | J RCM-payment-only net, K/L/M SGST/CGST/IGST 5%
 # RCM liability (cash) = B+F+J blocks.  RCM credit = B+F blocks only —
 # the 'payment only' block carries no ITC (blocked under s.17(5)).
-EXPENSE_KEYS = ["State Name"]
+# Only used to LOCATE the header row (the data below is read positionally via
+# EXPENSE_POS), so several spellings of the state column are accepted - the
+# 'Final (Shortcut)' sheets have shipped it as "State", "Name of State" and
+# "State/UT" as well as "State Name". min_cols still guards against a wrong sheet.
+EXPENSE_KEYS = ["State Name", "State", "Name of State", "State/UT", "States", "State/ UT"]
 EXPENSE_POS = {
     "state": 0,
     "gta_net": 1, "gta_sgst": 2, "gta_cgst": 3, "gta_igst": 4,
