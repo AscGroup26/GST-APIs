@@ -400,6 +400,26 @@ def _is_excel(file_obj):
     return False
 
 
+def _normalise_cols(df, dtype_map=None):
+    """Canonical lower-case column names, then apply the dtypes by those names.
+
+    dtype= is keyed on the canonical spelling, so pandas silently skips it when
+    the workbook header differs in case or padding. Rename first, cast after.
+    """
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    df = df.loc[:, ~df.columns.duplicated()]
+    if dtype_map:
+        for _c, _t in dtype_map.items():
+            if _c in df.columns:
+                try:
+                    df[_c] = df[_c].astype(_t)
+                except (TypeError, ValueError):
+                    # A stray text cell in a numeric column must not lose the
+                    # whole file; num() cleans these downstream.
+                    pass
+    return df
+
+
 def read_csv_safe(file_obj, **kwargs):
     """
     Read a tabular source that may arrive as CSV *or* as an Excel workbook.
@@ -416,10 +436,20 @@ def read_csv_safe(file_obj, **kwargs):
     """
     if _is_excel(file_obj):
         xl_kwargs = {k: v for k, v in kwargs.items() if k not in _CSV_ONLY_KWARGS}
+        # A workbook header is hand-touched far more often than a CSV one, so it
+        # arrives as "IGSTAMT", "igstamt " or "Inv_No" where the CSV always said
+        # "igstamt". usecols is an exact-match callable, so such a column was
+        # dropped on read and every later reference to it failed. Match on the
+        # stripped, lower-cased name and hand back the canonical spelling.
+        _uc = xl_kwargs.get("usecols")
+        if callable(_uc):
+            xl_kwargs["usecols"] = lambda c, _f=_uc: _f(str(c).strip().lower())
+        _dt = xl_kwargs.pop("dtype", None)
         if hasattr(file_obj, "seek"):
             file_obj.seek(0)
         try:
-            return pd.read_excel(file_obj, engine="calamine", **xl_kwargs)
+            _df = pd.read_excel(file_obj, engine="calamine", **xl_kwargs)
+            return _normalise_cols(_df, _dt)
         except Exception:
             # calamine is the only engine that spans both formats; if it is
             # missing or chokes, fall back to the per-format readers.
@@ -427,7 +457,7 @@ def read_csv_safe(file_obj, **kwargs):
                 file_obj.seek(0)
             head = _peek(file_obj)
             engine = "xlrd" if head.startswith(_OLE2_MAGIC) else "openpyxl"
-            return pd.read_excel(file_obj, engine=engine, **xl_kwargs)
+            return _normalise_cols(pd.read_excel(file_obj, engine=engine, **xl_kwargs), _dt)
 
     # Try utf-8 first (fastest path for most files).
     # Fall back to latin1 which decodes every byte without raising UnicodeDecodeError.
@@ -610,6 +640,30 @@ def num(df, cols):
     return df
 
 TAX_COLS = ["inv_tot","sgstamt","cgstamt","igstamt","ugstamt","cessamt","totval","inv_qty","taxslab","dist_rate"]
+
+# Money columns that every invoice-level agg() below sums. A source export may
+# legitimately omit some of them - a stock transfer between states is IGST-only,
+# so its file carries no cgstamt/sgstamt/ugstamt/cessamt at all - and num() only
+# converts columns that already exist. Referencing an absent one inside .agg()
+# raises KeyError and takes the WHOLE sheet down, which is how Combined GSTR-1
+# came out blank while every other sheet filled.
+_MONEY_COLS = ("inv_tot", "totval", "igstamt", "cgstamt",
+               "sgstamt", "ugstamt", "cessamt")
+
+
+def ensure_cols(df, numeric=(), text=()):
+    """Add any missing column with a neutral default, so agg() cannot KeyError.
+
+    A column the file never carried is a zero, not a reason to lose the sheet.
+    """
+    for c in numeric:
+        if c not in df.columns:
+            df[c] = 0.0
+    for c in text:
+        if c and c not in df.columns:
+            df[c] = ""
+    return df
+
 
 # Only load these columns from state CSVs — skips 20+ unused columns, halves memory
 _SALES_USECOLS = [
@@ -2023,6 +2077,7 @@ def build_tax_summary(sales_df, return_df=None, stock_df=None):
     if not frames: return pd.DataFrame()
     all_df = pd.concat(frames, ignore_index=True)
     all_df = num(all_df, ["inv_tot","igstamt","cgstamt","sgstamt","ugstamt","cessamt","taxslab"])
+    all_df = ensure_cols(all_df, _MONEY_COLS)
     grp_cols = [c for c in ["_src","fstate","fstcode","taxslab"] if c in all_df.columns]
     grp = all_df.groupby(grp_cols, as_index=False).agg(
         Taxable_Value=("inv_tot","sum"),
@@ -2057,8 +2112,17 @@ def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_d
         for _fc in ["inv_tot","igstamt","cgstamt","sgstamt","ugstamt","cessamt"]:
             if _fc in df.columns:
                 df[_fc] = df[_fc].astype("float64")
-        if "totval" not in df.columns:
-            df["totval"] = 0
+        df = ensure_cols(df, _MONEY_COLS,
+                         ["gstr1_section", "gstin", "mscname", "fstate", "fstcode",
+                          "gstin2", "inv_date", "ship_state", "ship_stcod"])
+        # groupby keys cannot be synthesised away: without an invoice number or
+        # a slab there is nothing to group on, so say so rather than aggregating
+        # rubbish into a return.
+        _missing_keys = [k for k in ("inv_no", "taxslab") if k not in df.columns]
+        if _missing_keys:
+            raise KeyError(
+                f"Sale file is missing {_missing_keys}, which Combined GSTR-1 "
+                f"groups on. Columns found: {sorted(sales_df.columns)[:15]}")
         agg = df.groupby(["inv_no","taxslab"], as_index=False).agg(
             GSTR1_Section=("gstr1_section","first"),
             Supplier_GSTIN=("gstin","first"),
@@ -2082,6 +2146,7 @@ def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_d
     # ── Returns (CDNR / CDNUR) ───────────────────────────────────
     if return_df is not None and not return_df.empty:
         df = return_df.copy()
+        df = ensure_cols(df, _MONEY_COLS, ["gstin", "mscname", "gstin2"])
         df["gstin2"] = df["gstin2"].astype(str).str.strip().replace({"nan":"","NaN":"","None":""})
         df = num(df, TAX_COLS)
         ship_col = "ship_stcode" if "ship_stcode" in df.columns else "ship_stcod"
@@ -2089,6 +2154,7 @@ def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_d
         note_key = "retufm_no" if "retufm_no" in df.columns else "inv_no"
         date_col = "retufm_dt" if "retufm_dt" in df.columns else "inv_date"
         rtype    = "RETURNTYPE" if "RETURNTYPE" in df.columns else None
+        df = ensure_cols(df, text=[ship_col, date_col])
         agg_dict = {
             "GSTR1_Section" : ("sec","first"),
             "Supplier_GSTIN": ("gstin","first"),
@@ -2117,8 +2183,11 @@ def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_d
     # ── Stock Transfer ───────────────────────────────────────────
     if stock_df is not None and not stock_df.empty and "inv_no" in stock_df.columns:
         df = num(stock_df.copy(), TAX_COLS)
-        if "totval" not in df.columns:
-            df["totval"] = 0
+        # Inter-state branch transfer is IGST-only, so this file routinely has no
+        # cgstamt/sgstamt/ugstamt/cessamt column at all.
+        df = ensure_cols(df, _MONEY_COLS,
+                         ["gstin", "mscname", "fstate", "fstcode", "gstin2",
+                          "inv_date", "ship_state", "ship_stcod"])
         agg = df.groupby(["inv_no","taxslab"], as_index=False).agg(
             Supplier_GSTIN      =("gstin",     "first"),
             Supplier_Name       =("mscname",   "first"),
@@ -2605,12 +2674,31 @@ if process_btn:
     except Exception as _pe:
         st.warning(f"⚠️ Product detail lookup skipped: {_pe}")
 
+    def _rows(_d):
+        return 0 if _d is None or not isinstance(_d, pd.DataFrame) else len(_d)
+
+    _cmb_inputs = (f"sales={_rows(sales_df):,} returns={_rows(_ret):,} "
+                   f"stock={_rows(_stk):,} cgst_returns={_rows(_cgst):,}")
     try:
         combined_df = build_combined(sales_df, _ret, _stk, cc_df, assets_df,
                                      cgst_returns=_cgst, prod_lookup=_prod_lookup)
     except Exception as _ce:
-        st.warning(f"⚠️ Combined GSTR-1 build error: {_ce}")
+        # A blank COMBINED sheet is a filing hazard, not a cosmetic glitch. It
+        # used to surface as a one-line warning that scrolled past, leaving an
+        # empty tab that reads like "no business this month". Show what broke.
+        import traceback as _tb
+        st.error(f"❌ Combined GSTR-1 could not be built, so the sheet will "
+                 f"be EMPTY — {type(_ce).__name__}: {_ce}  |  Inputs: {_cmb_inputs}")
+        with st.expander("Combined GSTR-1 — full error"):
+            st.code(_tb.format_exc(), language="text")
         combined_df = pd.DataFrame()
+    else:
+        if combined_df is None or combined_df.empty:
+            # No exception, so every source was genuinely empty. Name the counts
+            # so an upstream load failure is not mistaken for a quiet month.
+            st.error(f"❌ Combined GSTR-1 is EMPTY — no source rows reached "
+                     f"it. Inputs: {_cmb_inputs}. If sales is 0 the state files "
+                     f"did not load; check the file names and the folder path.")
 
     # Display section only needs these 4 totals from sales_df, not the raw frame —
     # compute them now so we can free sales_df instead of keeping it in session_state.
