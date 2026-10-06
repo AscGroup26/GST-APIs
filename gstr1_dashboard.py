@@ -359,7 +359,76 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────────────────────────
+# Workbook signatures. xlsx/xlsm are zip containers; legacy xls is an OLE2
+# compound file. Sniffing the bytes rather than trusting the extension matters
+# because these exports reach us mislabelled often enough - a ".csv" that is
+# really a workbook, or an ".xls" that is really tab-separated text.
+_ZIP_MAGIC  = b"PK\x03\x04"
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+# Accepted by read_csv only; read_excel raises TypeError on them.
+_CSV_ONLY_KWARGS = ("low_memory", "encoding", "sep", "delimiter", "lineterminator",
+                    "quotechar", "escapechar", "engine", "on_bad_lines",
+                    "skipinitialspace", "memory_map")
+
+
+def _peek(file_obj, n=8):
+    """First n bytes of a path or file-like, without disturbing the read position."""
+    try:
+        if hasattr(file_obj, "read"):
+            pos = file_obj.tell() if hasattr(file_obj, "tell") else 0
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(0)
+            head = file_obj.read(n)
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(pos)
+            return head if isinstance(head, bytes) else bytes(str(head), "latin1")
+        with open(file_obj, "rb") as fh:
+            return fh.read(n)
+    except Exception:
+        return b""
+
+
+def _is_excel(file_obj):
+    """True when this source is a workbook, by content first then by name."""
+    head = _peek(file_obj)
+    if head.startswith(_ZIP_MAGIC) or head.startswith(_OLE2_MAGIC):
+        return True
+    if head[:1] in (b"", None):          # unreadable head - fall back to the name
+        name = getattr(file_obj, "name", file_obj)
+        return str(name).lower().endswith((".xlsx", ".xlsm", ".xls", ".ods"))
+    return False
+
+
 def read_csv_safe(file_obj, **kwargs):
+    """
+    Read a tabular source that may arrive as CSV *or* as an Excel workbook.
+
+    The state-sales and stock-transfer exports used to be CSV-only, but the
+    client sends whichever format their ERP produces that month, so both are
+    accepted here. Workbooks go through calamine, which reads xlsx/xlsm and
+    legacy xls alike (xlrd 2.x dropped xlsx, openpyxl never read xls), and the
+    first sheet is used. CSV keeps the original utf-8 then latin1 fallback -
+    latin1 decodes every byte, so it cannot raise UnicodeDecodeError.
+
+    usecols/dtype behave the same on both paths; CSV-only keywords are dropped
+    for workbooks so existing call sites need no change.
+    """
+    if _is_excel(file_obj):
+        xl_kwargs = {k: v for k, v in kwargs.items() if k not in _CSV_ONLY_KWARGS}
+        if hasattr(file_obj, "seek"):
+            file_obj.seek(0)
+        try:
+            return pd.read_excel(file_obj, engine="calamine", **xl_kwargs)
+        except Exception:
+            # calamine is the only engine that spans both formats; if it is
+            # missing or chokes, fall back to the per-format readers.
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(0)
+            head = _peek(file_obj)
+            engine = "xlrd" if head.startswith(_OLE2_MAGIC) else "openpyxl"
+            return pd.read_excel(file_obj, engine=engine, **xl_kwargs)
+
     # Try utf-8 first (fastest path for most files).
     # Fall back to latin1 which decodes every byte without raising UnicodeDecodeError.
     if hasattr(file_obj, "seek"):
@@ -655,13 +724,14 @@ with st.sidebar:
         assets_file = None
     else:
         data_folder = None
-        st.subheader("1. State-wise Sales CSVs")
+        st.subheader("1. State-wise Sales files")
         state_files = st.file_uploader(
-            "Upload all state CSV files", type=["csv"],
+            "Upload all state files (CSV or Excel)", type=["csv", "xlsx", "xlsm", "xls"],
             accept_multiple_files=True, key="state_sales"
         )
-        st.subheader("2. Stock Transfer CSV")
-        stock_file = st.file_uploader("GST_StockTransfer*.csv", type=["csv"], key="stock")
+        st.subheader("2. Stock Transfer file")
+        stock_file = st.file_uploader("GST_StockTransfer* (CSV or Excel)",
+                                      type=["csv", "xlsx", "xlsm", "xls"], key="stock")
         st.subheader("3. Sales Return Excel")
         return_file = st.file_uploader("GST_SalesReturn_*.xlsx", type=["xlsx","xls"], key="sret")
         st.subheader("4. Cross Charge Invoices Excel")
@@ -672,24 +742,41 @@ with st.sidebar:
     process_btn = st.button("🚀 Process & Generate GSTR-1", width="stretch", type="primary")
 
 # ── helper to auto-detect files from folder ──────────────────────
+# Sales and stock transfer arrive as CSV or as a workbook depending on what the
+# client's ERP produced that month, so the folder scan accepts either.
+_TABULAR_EXTS = ("csv", "xlsx", "xlsm", "xls")
+
+
+def _scan(folder, *stems):
+    """Every file under folder matching any stem in any tabular extension."""
+    hits = []
+    for stem in stems:
+        for ext in _TABULAR_EXTS:
+            hits += glob.glob(os.path.join(folder, "**", f"{stem}.{ext}"), recursive=True)
+    # Excel leaves a '~$name.xlsx' lock file beside any workbook that is open;
+    # it is not a readable workbook and must never be picked up as input.
+    hits = [h for h in hits if not os.path.basename(h).startswith("~$")]
+    return list(dict.fromkeys(hits))          # dedupe, keep discovery order
+
+
 def detect_local_files(folder):
     """Return paths for each file type from a local folder."""
-    state_csvs = (
-        glob.glob(os.path.join(folder, "**/saledtl*.csv"), recursive=True) +
-        glob.glob(os.path.join(folder, "**/_saledtl*.csv"), recursive=True)
-    )
-    # dedupe
-    state_csvs = list(dict.fromkeys(state_csvs))
+    state_csvs = _scan(folder, "saledtl*", "_saledtl*")
 
     def first_match(*patterns):
         for pat in patterns:
             hits = glob.glob(os.path.join(folder, "**", pat), recursive=True)
+            hits = [h for h in hits if not os.path.basename(h).startswith("~$")]
             if hits: return hits[0]
         return None
 
+    def first_tabular(*stems):
+        hits = _scan(folder, *stems)
+        return hits[0] if hits else None
+
     return {
         "state_csvs"  : state_csvs,
-        "stock"       : first_match("GST_StockTransfer*.csv","*StockTransfer*.csv"),
+        "stock"       : first_tabular("GST_StockTransfer*", "*StockTransfer*"),
         "sales_return": first_match("GST_Sales_Return*.xlsx","GST_SalesReturn*.xlsx","*Sales_Return*.xlsx","*SalesReturn*.xlsx"),
         "cross_charge": first_match("*Cross*Charge*.xlsx","*CrossCharge*.xlsx"),
         "assets"      : first_match("*Assets*Sale*.xlsx","*Asset*Sale*.xlsx"),
