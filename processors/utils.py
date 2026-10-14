@@ -185,34 +185,25 @@ VOUCHER_STATE_ALIASES = {
     "UTTARAKHAND": "Uttarakhand",
     "WEST BENGAL": "West Bengal",
     "WESTBENGAL": "West Bengal",
-    # Body-only (see _VOUCHER_BODY_ONLY_ALIASES): the books write West Bengal
-    # journals as "Journal-West", but "West" is also a zone name, so this may
-    # only resolve as a voucher body, never from free text.
-    "WEST": "West Bengal",
     # These eight had no alias at all, so a "JV-JAMMU & KASHMIR" voucher derived
     # no state and _resolve_state() fell through to the GSTIN, stamping the head
     # office state (Maharashtra) onto a Jammu & Kashmir line in the ineligible
-    # sheet. Both "&" and "AND" spellings appear in the books, as do the bare
-    # first words, so all are listed. The lookbehind in _match_voucher_alias
-    # keeps "DAMAN" from firing inside "ANDAMAN", and longest-first ordering
-    # keeps the full names ahead of the short forms.
+    # sheet. Both "&" and "AND" spellings appear in the books. Only the full
+    # names live here; the bare first words are voucher-only, see
+    # _VOUCHER_BODY_ALIASES.
     "JAMMU & KASHMIR": "Jammu and Kashmir",
     "JAMMU AND KASHMIR": "Jammu and Kashmir",
     "JAMMU KASHMIR": "Jammu and Kashmir",
-    "JAMMU": "Jammu and Kashmir",
     "PUDUCHERRY": "Puducherry",
     "PONDICHERRY": "Puducherry",
     "ANDAMAN & NICOBAR ISLANDS": "Andaman and Nicobar Islands",
     "ANDAMAN AND NICOBAR ISLANDS": "Andaman and Nicobar Islands",
     "ANDAMAN & NICOBAR": "Andaman and Nicobar Islands",
     "ANDAMAN AND NICOBAR": "Andaman and Nicobar Islands",
-    "ANDAMAN": "Andaman and Nicobar Islands",
     "DADRA & NAGAR HAVELI": "Dadra and Nagar Haveli",
     "DADRA AND NAGAR HAVELI": "Dadra and Nagar Haveli",
-    "DADRA": "Dadra and Nagar Haveli",
     "DAMAN & DIU": "Daman and Diu",
     "DAMAN AND DIU": "Daman and Diu",
-    "DAMAN": "Daman and Diu",
     "LAKSHADWEEP": "Lakshadweep",
     "OTHER TERRITORY": "Other Territory",
     "CENTRE JURISDICTION": "Centre Jurisdiction",
@@ -225,6 +216,24 @@ VOUCHER_STATE_ALIASES = {
     "MI": "Mizoram",
     "TR": "Tripura",
 }
+
+# Voucher-only aliases. These are NOT part of VOUCHER_STATE_ALIASES because
+# GSTR-3B imports that dict and norm_state() looks a state cell up in it
+# directly, bypassing the free-text guard below. A 3B sheet carrying the zone
+# name "West" would then be read as West Bengal, and "Daman"/"Andaman" would
+# start resolving where they used to be left blank. Keeping them here means
+# only state_name_from_voucher_type() - the ITC path - ever sees them.
+_VOUCHER_BODY_ALIASES = {
+    "WEST": "West Bengal",      # books write "Journal-West" for West Bengal
+    "JAMMU": "Jammu and Kashmir",
+    "ANDAMAN": "Andaman and Nicobar Islands",
+    "DADRA": "Dadra and Nagar Haveli",
+    "DAMAN": "Daman and Diu",
+}
+
+# What a JV-/Journal- body may resolve against: the shared names plus the
+# voucher-only ones above.
+_ALL_VOUCHER_ALIASES = {**VOUCHER_STATE_ALIASES, **_VOUCHER_BODY_ALIASES}
 
 
 def state_name_from_code(code):
@@ -245,16 +254,16 @@ def state_name_from_gstin(gstin):
 # never be matched against free text: "IDBI Bank -Payment" contains BI, "Bank
 # Transfer" contains TR, "Supplier Payment" contains UP, "Debit Note" contains
 # BI. Derived from the dict rather than hard-coded so the two stay in step.
-# "WEST" joins them: the books use "Journal-West" for West Bengal, but West is
-# also a zone, so it must resolve as a voucher body and nowhere else.
+# _VOUCHER_BODY_ALIASES joins them for the same reason: "West", "Daman" and
+# "Andaman" are only a state when they are the body of a JV-/Journal- voucher.
 _VOUCHER_BODY_ONLY_ALIASES = frozenset(
-    k for k in VOUCHER_STATE_ALIASES if len(k) <= 2
-) | {"WEST"}
+    k for k in _ALL_VOUCHER_ALIASES if len(k) <= 2
+) | frozenset(_VOUCHER_BODY_ALIASES)
 
 # Longest first, so "MADHYA PRADESH" wins over "MADHYA" and "UTTARAKHAND"
 # is never read as "UTTAR".
 _VOUCHER_ALIASES_BY_LENGTH = sorted(
-    VOUCHER_STATE_ALIASES.items(), key=lambda kv: len(kv[0]), reverse=True
+    _ALL_VOUCHER_ALIASES.items(), key=lambda kv: len(kv[0]), reverse=True
 )
 
 
@@ -295,8 +304,8 @@ def state_name_from_voucher_type(voucher_type):
         elif "-PUR" in body:
             body = body.split("-PUR", 1)[0]
         body = body.strip()
-        if body in VOUCHER_STATE_ALIASES:
-            return VOUCHER_STATE_ALIASES[body]
+        if body in _ALL_VOUCHER_ALIASES:
+            return _ALL_VOUCHER_ALIASES[body]
         return _match_voucher_alias(body, allow_short=True)
     return _match_voucher_alias(vt, allow_short=False)
 
