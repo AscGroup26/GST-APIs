@@ -185,6 +185,37 @@ VOUCHER_STATE_ALIASES = {
     "UTTARAKHAND": "Uttarakhand",
     "WEST BENGAL": "West Bengal",
     "WESTBENGAL": "West Bengal",
+    # Body-only (see _VOUCHER_BODY_ONLY_ALIASES): the books write West Bengal
+    # journals as "Journal-West", but "West" is also a zone name, so this may
+    # only resolve as a voucher body, never from free text.
+    "WEST": "West Bengal",
+    # These eight had no alias at all, so a "JV-JAMMU & KASHMIR" voucher derived
+    # no state and _resolve_state() fell through to the GSTIN, stamping the head
+    # office state (Maharashtra) onto a Jammu & Kashmir line in the ineligible
+    # sheet. Both "&" and "AND" spellings appear in the books, as do the bare
+    # first words, so all are listed. The lookbehind in _match_voucher_alias
+    # keeps "DAMAN" from firing inside "ANDAMAN", and longest-first ordering
+    # keeps the full names ahead of the short forms.
+    "JAMMU & KASHMIR": "Jammu and Kashmir",
+    "JAMMU AND KASHMIR": "Jammu and Kashmir",
+    "JAMMU KASHMIR": "Jammu and Kashmir",
+    "JAMMU": "Jammu and Kashmir",
+    "PUDUCHERRY": "Puducherry",
+    "PONDICHERRY": "Puducherry",
+    "ANDAMAN & NICOBAR ISLANDS": "Andaman and Nicobar Islands",
+    "ANDAMAN AND NICOBAR ISLANDS": "Andaman and Nicobar Islands",
+    "ANDAMAN & NICOBAR": "Andaman and Nicobar Islands",
+    "ANDAMAN AND NICOBAR": "Andaman and Nicobar Islands",
+    "ANDAMAN": "Andaman and Nicobar Islands",
+    "DADRA & NAGAR HAVELI": "Dadra and Nagar Haveli",
+    "DADRA AND NAGAR HAVELI": "Dadra and Nagar Haveli",
+    "DADRA": "Dadra and Nagar Haveli",
+    "DAMAN & DIU": "Daman and Diu",
+    "DAMAN AND DIU": "Daman and Diu",
+    "DAMAN": "Daman and Diu",
+    "LAKSHADWEEP": "Lakshadweep",
+    "OTHER TERRITORY": "Other Territory",
+    "CENTRE JURISDICTION": "Centre Jurisdiction",
     "MP": "Madhya Pradesh",
     "UP": "Uttar Pradesh",
     "AP": "Andhra Pradesh",
@@ -214,7 +245,11 @@ def state_name_from_gstin(gstin):
 # never be matched against free text: "IDBI Bank -Payment" contains BI, "Bank
 # Transfer" contains TR, "Supplier Payment" contains UP, "Debit Note" contains
 # BI. Derived from the dict rather than hard-coded so the two stay in step.
-_VOUCHER_SHORT_ALIASES = frozenset(k for k in VOUCHER_STATE_ALIASES if len(k) <= 2)
+# "WEST" joins them: the books use "Journal-West" for West Bengal, but West is
+# also a zone, so it must resolve as a voucher body and nowhere else.
+_VOUCHER_BODY_ONLY_ALIASES = frozenset(
+    k for k in VOUCHER_STATE_ALIASES if len(k) <= 2
+) | {"WEST"}
 
 # Longest first, so "MADHYA PRADESH" wins over "MADHYA" and "UTTARAKHAND"
 # is never read as "UTTAR".
@@ -226,7 +261,7 @@ _VOUCHER_ALIASES_BY_LENGTH = sorted(
 def _match_voucher_alias(text, allow_short):
     """Find a state alias in `text`, matching whole words only."""
     for key, val in _VOUCHER_ALIASES_BY_LENGTH:
-        if not allow_short and key in _VOUCHER_SHORT_ALIASES:
+        if not allow_short and key in _VOUCHER_BODY_ONLY_ALIASES:
             continue
         if re.search(rf"(?<![A-Z]){re.escape(key)}(?![A-Z])", text):
             return val
@@ -248,8 +283,13 @@ def state_name_from_voucher_type(voucher_type):
     vt = str(voucher_type).strip().upper()
     if not vt:
         return ""
-    if vt.startswith("JV-"):
-        body = vt[3:]
+    # "JV-" is the common prefix, but the same books also write "Journal-<state>"
+    # and "JRNL-<state>" for the identical state-wise journal, and those used to
+    # fall through to the free-text branch where body-only aliases are skipped -
+    # so "Journal-West" derived nothing and the row kept the GSTIN's state.
+    _prefix = next((p for p in ("JV-", "JOURNAL-", "JRNL-") if vt.startswith(p)), "")
+    if _prefix:
+        body = vt[len(_prefix):]
         if body.endswith("-PUR"):
             body = body[:-4]
         elif "-PUR" in body:
