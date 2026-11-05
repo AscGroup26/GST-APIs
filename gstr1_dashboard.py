@@ -2355,6 +2355,43 @@ def build_combined(sales_df, return_df=None, stock_df=None, cc_df=None, assets_d
 # ─────────────────────────────────────────────────────────────────
 # EXCEL WRITER
 # ─────────────────────────────────────────────────────────────────
+def _write_combined_workbook(combined_df, period) -> bytes:
+    """COMBINED on its own, for the dedicated button in the Combined tab.
+
+    Separate from write_excel() because this is one sheet with its own header
+    block, and because the caller treats a failure here as non-fatal: the same
+    rows already ship inside the main workbook.
+    """
+    nan_s = ["nan", "NaN", "None", "none", "<NA>"]
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, dir=_XLSX_TMP_DIR)
+    tmp.close()
+    try:
+        with xlsxwriter.Workbook(tmp.name, {"strings_to_numbers": False}) as wb:
+            ws  = wb.add_worksheet("Combined GSTR-1")
+            hf  = wb.add_format({"bold": True, "bg_color": "#1e3a5f", "font_color": "white", "border": 1})
+            nf  = wb.add_format({"num_format": "#,##0.00", "border": 1})
+            tf  = wb.add_format({"border": 1})
+            ttf = wb.add_format({"bold": True, "font_size": 12, "bg_color": "#d6e4f0", "border": 1})
+            cols = list(combined_df.columns)
+            ws.merge_range(0, 0, 0, max(len(cols) - 1, 0),
+                           f"Combined GSTR-1  |  Period: {period}", ttf)
+            for ci, c in enumerate(cols):
+                ws.write(1, ci, c, hf)
+                ws.set_column(ci, ci, max(16, len(str(c)) + 4))
+            ncols = set(combined_df.select_dtypes(include=[np.number]).columns)
+            for ci, c in enumerate(cols):
+                col = combined_df.iloc[:, ci]
+                if c in ncols:
+                    ws.write_column(2, ci, pd.to_numeric(col, errors="coerce").fillna(0).tolist(), nf)
+                else:
+                    ws.write_column(2, ci, col.astype(object).where(col.notna(), "")
+                                    .astype(str).str.strip().replace(nan_s, "").tolist(), tf)
+        with open(tmp.name, "rb") as fh:
+            return fh.read()
+    finally:
+        os.unlink(tmp.name)
+
+
 def write_excel(sheets_dict: dict, period: str) -> bytes:
     _nan_strs = {"nan","NaN","None","none","<NA>"}
 
@@ -3250,40 +3287,39 @@ if "gstr1_results" in st.session_state:
     with tabs[11]:
         st.markdown("---")
         if combined_df is not None and not combined_df.empty:
-            _nan_s = ["nan","NaN","None","none","<NA>"]
-            _fn = f"Combined_GSTR1_{period_label}.xlsx"
-            _tmp2 = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, dir=_XLSX_TMP_DIR)
-            _tmp2.close()
-            try:
-                with xlsxwriter.Workbook(_tmp2.name, {"strings_to_numbers": False}) as _wb:
-                    _ws  = _wb.add_worksheet("Combined GSTR-1")
-                    _hf  = _wb.add_format({"bold":True,"bg_color":"#1e3a5f","font_color":"white","border":1})
-                    _nf  = _wb.add_format({"num_format":"#,##0.00","border":1})
-                    _tf  = _wb.add_format({"border":1})
-                    _ttf = _wb.add_format({"bold":True,"font_size":12,"bg_color":"#d6e4f0","border":1})
-                    _cls = list(combined_df.columns)
-                    _ws.merge_range(0,0,0,max(len(_cls)-1,0),f"Combined GSTR-1  |  Period: {period_label}",_ttf)
-                    for _ci,_c in enumerate(_cls):
-                        _ws.write(1,_ci,_c,_hf)
-                        _ws.set_column(_ci,_ci,max(16,len(str(_c))+4))
-                    _ncols = set(combined_df.select_dtypes(include=[np.number]).columns)
-                    for _ci,_c in enumerate(_cls):
-                        _s = combined_df.iloc[:,_ci]
-                        if _c in _ncols:
-                            _ws.write_column(2,_ci,pd.to_numeric(_s,errors="coerce").fillna(0).tolist(),_nf)
-                        else:
-                            _ws.write_column(2,_ci,_s.astype(object).where(_s.notna(),"").astype(str).str.strip().replace(_nan_s,"").tolist(),_tf)
-                with open(_tmp2.name, "rb") as _f:
-                    _combined_bytes = _f.read()
-            finally:
-                os.unlink(_tmp2.name)
-            st.download_button(
-                label="📥 Download Combined GSTR-1 Excel",
-                data=_combined_bytes,
-                file_name=_fn,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-            st.caption(f"Rows: {len(combined_df):,} | Columns: {len(combined_df.columns)}")
+            # Built once per processed result, not once per rerun. Streamlit runs
+            # every tab body on every interaction, so this used to rewrite the
+            # whole COMBINED sheet to scratch and read it back each time a tab was
+            # clicked or a filter changed - gigabytes of churn per click on a
+            # 1.9M-row month.
+            _ck = (period_label, len(combined_df), len(combined_df.columns))
+            _cache = st.session_state.setdefault("_combined_xlsx_cache", {})
+            _combined_bytes, _combined_err = _cache.get(_ck), None
+            if _combined_bytes is None:
+                try:
+                    _combined_bytes = _write_combined_workbook(combined_df, period_label)
+                    _cache[_ck] = _combined_bytes
+                except Exception as _cbe:
+                    # This tab's workbook is a convenience copy of a sheet the main
+                    # download already carries. Letting the failure escape ended the
+                    # script here and took the main "Download GSTR-1 Output Files"
+                    # section below with it, so a disk-full in this one optional
+                    # build left the user with no download button at all.
+                    _combined_bytes, _combined_err = None, _cbe
+            if _combined_bytes:
+                st.download_button(
+                    label="📥 Download Combined GSTR-1 Excel",
+                    data=_combined_bytes,
+                    file_name=f"Combined_GSTR1_{period_label}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                st.caption(f"Rows: {len(combined_df):,} | Columns: {len(combined_df.columns)}")
+            else:
+                st.error(
+                    f"Could not build the Combined GSTR-1 workbook on its own — "
+                    f"{type(_combined_err).__name__}: {_combined_err}. The main "
+                    f"download below is unaffected; COMBINED is a sheet in it too."
+                )
         else:
             st.warning("⚠️ Combined GSTR-1 has no data. Re-process to enable download.")
 
