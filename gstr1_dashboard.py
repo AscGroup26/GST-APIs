@@ -924,11 +924,26 @@ def build_b2b(sales_df):
     if df.empty: return pd.DataFrame()
     df = num(df, TAX_COLS)
 
-    # For B2B: Place of Supply = buyer's GSTIN state (first 2 digits of gstin2).
+    # Place of Supply is bill_state/bill_stcod, which classify_sales has already
+    # written into ship_state/ship_stcod for every row that carries a valid
+    # bill_stcod. This block used to overwrite that with the buyer's GSTIN state,
+    # which silently undid the correction - but only for B2B. On a bill-to-
+    # ship-to invoice the two differ: one billed to Haryana against a Delhi
+    # registration showed Delhi here and Haryana on every other sheet, and one
+    # billed to Goa against a Maharashtra registration showed Maharashtra.
+    # The GSTIN prefix is now a last resort, used only where no POS survived at
+    # all, so a row that would otherwise carry 0 still gets a state.
     if "gstin2" in df.columns:
-        gstin_prefix = df["gstin2"].astype(str).str[:2]
-        df["ship_stcod"] = pd.to_numeric(gstin_prefix, errors="coerce").fillna(df["ship_stcod"]).astype(int)
-        df["ship_state"]  = gstin_prefix.map(GSTIN_STATE_MAP).fillna(df["ship_state"])
+        _pfx = df["gstin2"].astype(str).str[:2]
+        _pos = pd.to_numeric(df["ship_stcod"], errors="coerce").fillna(0)
+        _missing = _pos <= 0
+        if _missing.any():
+            _from_gstin = pd.to_numeric(_pfx, errors="coerce")
+            df.loc[_missing, "ship_stcod"] = _from_gstin[_missing].fillna(0)
+            df.loc[_missing, "ship_state"] = (
+                _pfx[_missing].map(GSTIN_STATE_MAP).fillna(df.loc[_missing, "ship_state"])
+            )
+        df["ship_stcod"] = pd.to_numeric(df["ship_stcod"], errors="coerce").fillna(0).astype(int)
 
     if "totval" not in df.columns:
         df["totval"] = 0
